@@ -1,0 +1,1861 @@
+// --- file: MainActivity.kt ---
+package com.ahm.mydalil
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.viewModels
+import com.ahm.mydalil.data.local.datastore.UserPreferences
+import com.ahm.mydalil.data.repository.VerseRepository
+import com.ahm.mydalil.ui.navigation.AppNavigator
+import com.ahm.mydalil.ui.theme.MyDalilTheme
+import com.ahm.mydalil.ui.viewmodel.SearchViewModel
+import com.ahm.mydalil.ui.viewmodel.SearchViewModelFactory
+
+class MainActivity : ComponentActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // Manual Dependency Injection
+        val repository = VerseRepository.getInstance(this)
+        val userPreferences = UserPreferences(this)
+        val viewModel: SearchViewModel by viewModels {
+            SearchViewModelFactory(
+                repository,
+                userPreferences
+            )
+        }
+
+        setContent {
+            MyDalilTheme {
+                AppNavigator(viewModel = viewModel)
+            }
+        }
+    }
+}
+
+// --- file: MyDalilApplication.kt ---
+package com.ahm.mydalil
+
+import android.app.Application
+import dagger.hilt.android.HiltAndroidApp
+
+@HiltAndroidApp
+class MyDalilApplication : Application() {
+    
+    override fun onCreate() {
+        super.onCreate()
+        // Initialize any application-wide components here
+    }
+    
+    override fun onTerminate() {
+        // Clean up application resources
+        super.onTerminate()
+    }
+}
+
+
+// --- file: Constants.kt ---
+package com.ahm.mydalil.util
+
+import android.content.Context
+import android.content.res.Configuration
+import android.view.WindowManager
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+
+/**
+ * Represents the window size class for the app's window size.
+ */
+enum class WindowSizeClass { COMPACT, MEDIUM, EXPANDED }
+
+/**
+ * Calculates the window size class based on the current window size.
+ */
+fun calculateWindowSizeClass(context: Context, configuration: Configuration): WindowSizeClass {
+    val windowMetrics = context.getSystemService(Context.WINDOW_SERVICE)
+        .let { it as WindowManager }
+        .currentWindowMetrics
+    
+    val widthDp = windowMetrics.bounds.width() / 
+                 context.resources.displayMetrics.density
+    
+    return when {
+        widthDp < 600f -> WindowSizeClass.COMPACT
+        widthDp < 840f -> WindowSizeClass.MEDIUM
+        else -> WindowSizeClass.EXPANDED
+    }
+}
+
+/**
+ * Extension function to easily get the window size class in composables.
+ */
+@Composable
+fun rememberWindowSizeClass(): WindowSizeClass {
+    val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    
+    return remember(configuration) {
+        calculateWindowSizeClass(context, configuration)
+    }
+}
+
+/**
+ * Common constants used throughout the app.
+ */
+object Constants {
+    const val DATABASE_NAME = "mydalil_database"
+    const val PREFERENCES_NAME = "user_preferences"
+    const val HADITHS_DB_FILE = "hadiths_db.json"
+    const val VERSES_DB_FILE = "verses_db.json"
+    const val SEARCH_DEBOUNCE_MS = 300L
+    const val PAGINATION_PAGE_SIZE = 30
+    const val PAGINATION_PREFETCH_DISTANCE = 5
+}
+
+
+// --- file: ApiModels.kt ---
+package com.ahm.mydalil.data.model
+
+import com.google.gson.annotations.SerializedName
+
+data class Surah(
+    @SerializedName("Id") val surahNumber: Int,
+    @SerializedName("Name") val surahName: String,
+    @SerializedName("Verses") val surahVerses: List<Verse>
+)
+
+data class Verse(
+    @SerializedName("Number") val verseNumber: Int,
+    @SerializedName("Ayat") val verseText: String
+)
+
+
+// --- file: VerseRepository.kt ---
+package com.ahm.mydalil.data.repository
+
+import android.content.Context
+import android.util.Log
+import com.ahm.mydalil.data.local.room.AppDatabase
+import com.ahm.mydalil.data.local.room.Bookmark
+import com.ahm.mydalil.data.local.room.toBookmark
+import com.ahm.mydalil.data.model.Surah
+import com.ahm.mydalil.data.model.Verse
+import com.ahm.mydalil.util.Constants
+import com.google.firebase.crashlytics.buildtools.reloc.com.google.common.reflect.TypeToken
+import com.google.gson.Gson
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
+import java.io.IOException
+
+class VerseRepository private constructor(
+    private val context: Context,
+    private val db: AppDatabase
+) {
+    private val gson = Gson()
+    private val surahListType = object : TypeToken<List<Surah>>() {}.type
+
+    // Data is loaded once and stored, improving performance significantly.
+    private val hadithData: List<Surah> by lazy { loadDataFromFile(Constants.HADITHS_DB_FILE) }
+    private val verseData: List<Surah> by lazy { loadDataFromFile(Constants.VERSES_DB_FILE) }
+
+//    val allSurahNames: List<String> by lazy {
+//        (hadithData.map { it.surahName } + verseData.map { it.surahName }).distinct().sorted()
+//    }
+    val allSurahNames: List<String> by lazy {
+        (hadithData + verseData)
+            .distinctBy { it.surahName }
+            .sortedBy { it.surahNumber }
+            .map { it.surahName }
+    }
+
+    val hadithSurahNames: Set<String> by lazy { hadithData.map { it.surahName }.toSet() }
+    val verseSurahNames: Set<String> by lazy { verseData.map { it.surahName }.toSet() }
+
+    private fun loadDataFromFile(fileName: String): List<Surah> {
+        return try {
+            context.assets.open(fileName).bufferedReader().use { reader ->
+                gson.fromJson(reader, surahListType) ?: emptyList()
+            }
+        } catch (e: IOException) {
+            Log.e("VerseRepository", "Error reading data from assets: $fileName", e)
+            emptyList()
+        } catch (e: Exception) {
+            Log.e("VerseRepository", "Error parsing data: $fileName", e)
+            emptyList()
+        }
+    }
+
+    data class PagedResults(
+        val items: List<VerseSearchResult>,
+        val totalCount: Int,
+        val hasNextPage: Boolean
+    )
+
+    data class VerseSearchResult(val verse: Verse, val surahName: String, val surahNumber: Int) {
+        /** Provides a stable, unique ID for a search result, used for keys and bookmarks. */
+        val id: Int get() = "$surahNumber.${verse.verseNumber} $surahName".hashCode()
+    }
+
+    suspend fun search(
+        query: String,
+        surahFilters: Set<String>,
+        allWordsRequired: Boolean,
+        page: Int,
+        pageSize: Int,
+        loadHadiths: Boolean,
+        loadVerses: Boolean
+    ): PagedResults = withContext(Dispatchers.IO) {
+        val searchTerms = query.split(Regex("\\s+")).filter { it.isNotBlank() }.map { it.lowercase() }
+
+        val activeData = when {
+            loadHadiths && loadVerses -> hadithData + verseData
+            loadHadiths -> hadithData
+            loadVerses -> verseData
+            else -> emptyList()
+        }
+
+        val filteredSurahs = if (surahFilters.isNotEmpty()) {
+            activeData.filter { surah -> surahFilters.contains(surah.surahName) }
+        } else {
+            activeData
+        }
+
+        if (searchTerms.isEmpty()) {
+            // If query is empty, return all verses from filtered surahs, paginated.
+            val allResults = filteredSurahs.flatMap { surah ->
+                surah.surahVerses.map { verse ->
+                    VerseSearchResult(verse, surah.surahName, surah.surahNumber)
+                }
+            }
+            val start = (page * pageSize).coerceAtMost(allResults.size)
+            val end = (start + pageSize).coerceAtMost(allResults.size)
+            return@withContext PagedResults(
+                items = allResults.subList(start, end),
+                totalCount = allResults.size,
+                hasNextPage = end < allResults.size
+            )
+        }
+
+        val allResults = mutableListOf<VerseSearchResult>()
+        for (surah in filteredSurahs) {
+            for (verse in surah.surahVerses) {
+                val textToSearch = verse.verseText.lowercase()
+                val found = if (allWordsRequired) {
+                    searchTerms.all { textToSearch.contains(it) }
+                } else {
+                    searchTerms.any { textToSearch.contains(it) }
+                }
+
+                if (found) {
+                    allResults.add(VerseSearchResult(verse, surah.surahName, surah.surahNumber))
+                }
+            }
+        }
+
+        val start = (page * pageSize).coerceAtMost(allResults.size)
+        val end = (start + pageSize).coerceAtMost(allResults.size)
+
+        PagedResults(
+            items = allResults.subList(start, end),
+            totalCount = allResults.size,
+            hasNextPage = end < allResults.size
+        )
+    }
+
+    // --- Bookmark Functions ---
+
+    fun getAllBookmarks(): Flow<List<Bookmark>> = db.bookmarkDao().getAllBookmarks()
+
+    fun getBookmarkedIds(): Flow<Set<Int>> = db.bookmarkDao().getAllBookmarkedIds().map { it.toSet() }
+
+    suspend fun toggleBookmark(result: VerseSearchResult, query: String) = withContext(Dispatchers.IO) {
+        val existing = db.bookmarkDao().getBookmarkByVerseId(result.id)
+        if (existing != null) {
+            db.bookmarkDao().deleteBookmark(existing)
+        } else {
+            db.bookmarkDao().insertBookmark(result.toBookmark(query))
+        }
+    }
+
+    // --- Companion Object for Singleton Pattern ---
+
+    companion object {
+        @Volatile
+        private var INSTANCE: VerseRepository? = null
+
+        fun getInstance(context: Context): VerseRepository {
+            return INSTANCE ?: synchronized(this) {
+                val db = AppDatabase.getDatabase(context)
+                VerseRepository(context.applicationContext, db).also { INSTANCE = it }
+            }
+        }
+    }
+}
+
+
+// --- file: CommonUiComponents.kt ---
+package com.ahm.mydalil.ui.components
+
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.dp
+import com.ahm.mydalil.data.local.room.Bookmark
+import com.ahm.mydalil.data.repository.VerseRepository
+import java.text.DateFormat
+import java.util.Date
+
+@Composable
+fun SearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onBookmarkClick: () -> Unit,
+    onFilterClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp)
+    ) {
+        IconButton(onClick = onBookmarkClick) { Icon(Icons.Default.Star, "Bookmarks") }
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            modifier = Modifier.weight(1f),
+            placeholder = { Text("Search...") },
+            leadingIcon = { Icon(Icons.Default.Search, "Search") },
+            trailingIcon = {
+                if (query.isNotBlank()) {
+                    IconButton(onClick = { onQueryChange("") }) {
+                        Icon(Icons.Default.Close, "Clear search")
+                    }
+                }
+            },
+            shape = MaterialTheme.shapes.extraLarge,
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search)
+        )
+        IconButton(onClick = onFilterClick) { Icon(Icons.Default.ArrowDropDown, "Filters") }
+    }
+}
+
+
+// --- Component: SearchOptions & SourceSelector ---
+@Composable
+fun SearchOptions(
+    showFilters: Boolean,
+    allWordsRequired: Boolean,
+    onAllWordsRequiredChange: (Boolean) -> Unit,
+    loadHadiths: Boolean,
+    loadVerses: Boolean,
+    onFileSelectionChange: (Boolean, Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    AnimatedVisibility(
+        visible = showFilters
+    ) {
+        Row(
+            modifier = modifier.fillMaxWidth()
+                .padding(
+                    horizontal = 16.dp,
+                    vertical = 4.dp
+                ).padding(bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.toggleable(
+                    value = allWordsRequired,
+                    onValueChange = onAllWordsRequiredChange,
+                    role = Role.Checkbox
+                )
+                    .padding(end = 8.dp), //.padding(vertical = 6.dp, horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(checked = allWordsRequired, onCheckedChange = null, modifier = Modifier.size(20.dp))
+                Text("Match all words", modifier = Modifier.padding(start = 4.dp), style = MaterialTheme.typography.bodyMedium)
+            }
+
+            SourceSelector(
+                loadHadiths = loadHadiths,
+                loadVerses = loadVerses,
+                onSelectionChange = onFileSelectionChange
+            )
+        }
+    }
+}
+
+@Composable
+fun RoundCheckbox(
+    checked: Boolean,
+    onCheckedChange: ((Boolean) -> Unit)?,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(20.dp)
+            .clip(CircleShape)
+            .background(
+                if (checked) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surface,
+                shape = CircleShape
+            )
+            .border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
+            .clickable(onClick = { onCheckedChange?.invoke(!checked) }),
+        contentAlignment = Alignment.Center
+    ) {
+        if (checked) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = null,
+                modifier = Modifier.size(12.dp),
+                tint = MaterialTheme.colorScheme.onPrimary
+            )
+        }
+    }
+}
+
+@Composable
+private fun SourceSelector(
+    loadHadiths: Boolean,
+    loadVerses: Boolean,
+    onSelectionChange: (hadiths: Boolean, verses: Boolean) -> Unit,
+) {
+    val context = LocalContext.current
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .border(width = 1.dp, color = MaterialTheme.colorScheme.outline, shape = CircleShape)
+            .clip(CircleShape)
+    ) {
+        // Hadiths Toggle
+        Row(
+            modifier = Modifier.toggleable(
+                value = loadHadiths,
+                onValueChange = {
+                    if (!it && !loadVerses) {
+                        Toast.makeText(context, "At least one source must be selected", Toast.LENGTH_SHORT).show()
+                    } else {
+                        onSelectionChange(it, loadVerses)
+                    }
+                },
+                role = Role.Checkbox
+            ).padding(vertical = 6.dp, horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(checked = loadHadiths, onCheckedChange = null, modifier = Modifier.size(20.dp))
+            Text("Hadiths", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 6.dp))
+        }
+        // Verses Toggle
+        Row(
+            modifier = Modifier.toggleable(
+                value = loadVerses,
+                onValueChange = {
+                    if (!it && !loadHadiths) {
+                        Toast.makeText(context, "At least one source must be selected", Toast.LENGTH_SHORT).show()
+                    } else {
+                        onSelectionChange(loadHadiths, it)
+                    }
+                },
+                role = Role.Checkbox
+            ).padding(vertical = 6.dp, horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(checked = loadVerses, onCheckedChange = null, modifier = Modifier.size(20.dp))
+            Text("Verses", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 6.dp))
+        }
+    }
+}
+
+
+// --- Component: FilterPanel ---
+@Composable
+fun FilterPanel(
+    allSurahNames: List<String>,
+    hadithSurahNames: Set<String>,
+    verseSurahNames: Set<String>,
+    selectedSurahs: Set<String>,
+    onFilterChanged: (Set<String>) -> Unit,
+    loadHadiths: Boolean,
+    loadVerses: Boolean
+) {
+    var filterText by remember { mutableStateOf("") }
+    val filteredList = remember(filterText, allSurahNames) {
+        if (filterText.isBlank()) allSurahNames else allSurahNames.filter { it.contains(filterText, ignoreCase = true) }
+    }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Filter by Book/Surah", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = filterText,
+                onValueChange = { filterText = it },
+                label = { Text("Search books...") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                shape = MaterialTheme.shapes.extraLarge
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                Button(onClick = { onFilterChanged(allSurahNames.toSet()) }, modifier = Modifier.weight(1f)) { Text("All") }
+                Button(onClick = { onFilterChanged(emptySet()) }, modifier = Modifier.weight(1f)) { Text("None") }
+            }
+            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
+                items(filteredList) { surahName ->
+                    val isFromHadith = surahName in hadithSurahNames
+                    val isFromVerse = surahName in verseSurahNames
+                    if ((isFromHadith && loadHadiths) || (isFromVerse && loadVerses)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                val newSelection = selectedSurahs.toMutableSet()
+                                if (selectedSurahs.contains(surahName)) newSelection.remove(surahName)
+                                else newSelection.add(surahName)
+                                onFilterChanged(newSelection)
+                            }.padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(checked = selectedSurahs.contains(surahName), onCheckedChange = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(surahName, modifier = Modifier.weight(1f))
+                            SourceIndicator(isFromHadith, isFromVerse)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SourceIndicator(isFromHadith: Boolean, isFromVerse: Boolean) {
+    val hadithColor = Color(0xFF4CAF50)
+    val verseColor = Color(0xFF2196F3)
+    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        if (isFromHadith) {
+            Box(Modifier.size(8.dp).background(hadithColor, CircleShape))
+        }
+        if (isFromVerse) {
+            Box(Modifier.size(8.dp).background(verseColor, CircleShape))
+        }
+    }
+}
+
+
+// --- Component: VerseCard ---
+@Composable
+fun VerseCard(
+    result: VerseRepository.VerseSearchResult,
+    isBookmarked: Boolean,
+    highlightKeywords: List<String>,
+    onClick: () -> Unit,
+    onToggleBookmark: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth().clickable(onClick = onClick),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                Text(
+                    "${result.surahNumber}.${result.verse.verseNumber} ${result.surahName}",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                IconButton(onClick = onToggleBookmark, modifier = Modifier.size(24.dp)) {
+                    Icon(
+                        imageVector = if (isBookmarked) Icons.Filled.Star else Icons.Outlined.Star,
+                        contentDescription = if (isBookmarked) "Remove bookmark" else "Add bookmark",
+                        tint = if (isBookmarked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            HighlightedText(
+                text = result.verse.verseText,
+                keywords = highlightKeywords,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+}
+
+// --- Component: HighlightedText ---
+@Composable
+fun HighlightedText(text: String, keywords: List<String>, style: TextStyle) {
+    if (keywords.isEmpty() || keywords.all { it.isBlank() }) {
+        Text(text, style = style)
+        return
+    }
+
+    val pattern = remember(keywords) {
+        keywords.filter { it.isNotBlank() }.joinToString("|") { Regex.escape(it) }.toRegex(RegexOption.IGNORE_CASE)
+    }
+
+    val annotatedString = buildAnnotatedString {
+        var lastIndex = 0
+        pattern.findAll(text).forEach { matchResult ->
+            if (matchResult.range.first > lastIndex) {
+                append(text.substring(lastIndex, matchResult.range.first))
+            }
+            withStyle(style = SpanStyle(
+                background = MaterialTheme.colorScheme.primaryContainer,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+            ) {
+                append(matchResult.value)
+            }
+            lastIndex = matchResult.range.last + 1
+        }
+        if (lastIndex < text.length) {
+            append(text.substring(lastIndex))
+        }
+    }
+    Text(annotatedString, style = style)
+}
+
+
+// --- Interfaces & Extensions for Content Conversion ---
+interface VerseContent {
+    val verseText: String
+    val surahName: String
+    val verseNumber: Int
+    val extraInfo: String get() = ""
+}
+
+fun VerseRepository.VerseSearchResult.toVerseContent(): VerseContent = object : VerseContent {
+    override val verseText: String = this@toVerseContent.verse.verseText
+    override val surahName: String = this@toVerseContent.surahName
+    override val verseNumber: Int = this@toVerseContent.verse.verseNumber
+}
+
+fun Bookmark.toVerseContent(): VerseContent = object : VerseContent {
+    override val verseText: String = this@toVerseContent.verseText
+    override val surahName: String = this@toVerseContent.surahName
+    override val verseNumber: Int = this@toVerseContent.verseNumber
+    override val extraInfo: String = buildString {
+        if (this@toVerseContent.query.isNotEmpty()) {
+            appendLine("Found with search: \"${this@toVerseContent.query}\"")
+        }
+        append("Bookmarked on: ${DateFormat.getDateTimeInstance().format(
+            Date(
+                this@toVerseContent.createdAt
+            )
+        )}")
+    }
+}
+
+
+// --- file: AppNavigator.kt ---
+package com.ahm.mydalil.ui.navigation
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.*
+import com.ahm.mydalil.ui.screens.bookmarks.BookmarkScreen
+import com.ahm.mydalil.ui.screens.search.SearchScreen
+import com.ahm.mydalil.ui.viewmodel.SearchViewModel
+
+private sealed class Screen {
+    data object Search : Screen()
+    data object Bookmarks : Screen()
+}
+
+@Composable
+fun AppNavigator(viewModel: SearchViewModel) {
+    var currentScreen by remember { mutableStateOf<Screen>(Screen.Search) }
+
+    when (currentScreen) {
+        is Screen.Search -> SearchScreen(
+            viewModel = viewModel,
+            onNavigateToBookmarks = { currentScreen = Screen.Bookmarks }
+        )
+        is Screen.Bookmarks -> {
+            // Handle back press to navigate from Bookmarks to Search
+            BackHandler { currentScreen = Screen.Search }
+            BookmarkScreen(
+                viewModel = viewModel,
+                onNavigateBack = { currentScreen = Screen.Search }
+            )
+        }
+    }
+}
+
+
+// --- file: Color.kt ---
+package com.ahm.mydalil.ui.theme
+
+import androidx.compose.ui.graphics.Color
+
+val PrimaryLight = Color(0xFF3F51B5)
+val SecondaryLight = Color(0xFF5C6BC0)
+val BackgroundLight = Color(0xFFF5F5F5)
+val SurfaceLight = Color(0xFFFFFFFF)
+val OnPrimaryLight = Color(0xFFFFFFFF)
+val OnSecondaryLight = Color(0xFFFFFFFF)
+val OnBackgroundLight = Color(0xFF212121)
+val OnSurfaceLight = Color(0xFF212121)
+
+val PrimaryDark = Color(0xFF8C9EFF)
+val SecondaryDark = Color(0xFFA5B4FC)
+val BackgroundDark = Color(0xFF121212)
+val SurfaceDark = Color(0xFF1E1E1E)
+val OnPrimaryDark = Color(0xFF000000)
+val OnSecondaryDark = Color(0xFF000000)
+val OnBackgroundDark = Color(0xFFFFFFFF)
+val OnSurfaceDark = Color(0xFFFFFFFF)
+
+val ErrorColor = Color(0xFFF44336)
+
+
+// --- file: Theme.kt ---
+package com.ahm.mydalil.ui.theme
+
+import android.app.Activity
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+
+private val LightColorScheme = lightColorScheme(
+    primary = PrimaryLight,
+    secondary = SecondaryLight,
+    background = BackgroundLight,
+    surface = SurfaceLight,
+    onPrimary = OnPrimaryLight,
+    onSecondary = OnSecondaryLight,
+    onBackground = OnBackgroundLight,
+    onSurface = OnSurfaceLight,
+    error = ErrorColor
+)
+
+private val DarkColorScheme = darkColorScheme(
+    primary = PrimaryDark,
+    secondary = SecondaryDark,
+    background = BackgroundDark,
+    surface = SurfaceDark,
+    onPrimary = OnPrimaryDark,
+    onSecondary = OnSecondaryDark,
+    onBackground = OnBackgroundDark,
+    onSurface = OnSurfaceDark,
+    error = ErrorColor
+)
+
+@Composable
+fun MyDalilTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit
+) {
+    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as Activity).window
+            window.statusBarColor = colorScheme.primary.toArgb()
+            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
+        }
+    }
+
+    MaterialTheme(
+        colorScheme = colorScheme,
+        typography = AppTypography,
+        content = content
+    )
+}
+
+
+// --- file: Type.kt ---
+package com.ahm.mydalil.ui.theme
+
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+
+val AppTypography = Typography(
+    bodyLarge = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Normal,
+        fontSize = 16.sp,
+        lineHeight = 24.sp,
+        letterSpacing = 0.5.sp
+    ),
+    titleLarge = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Normal,
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
+        letterSpacing = 0.sp
+    ),
+    labelSmall = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Medium,
+        fontSize = 11.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.5.sp
+    )
+)
+
+
+// --- file: SearchViewModel.kt ---
+package com.ahm.mydalil.ui.viewmodel
+
+import android.util.Log
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.ahm.mydalil.data.local.datastore.UserPreferences
+import com.ahm.mydalil.data.local.room.Bookmark
+import com.ahm.mydalil.data.repository.VerseRepository
+import com.ahm.mydalil.util.Constants
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+// --- UI State Definitions ---
+
+sealed interface SearchUiState {
+    data object EmptyQuery : SearchUiState
+    data object Loading : SearchUiState
+    data class Success(
+        val results: List<VerseRepository.VerseSearchResult>,
+        val totalResults: Int,
+        val canLoadMore: Boolean,
+        val isLoadingMore: Boolean,
+        val query: String
+    ) : SearchUiState
+    data class Error(val message: String) : SearchUiState
+}
+
+data class BookmarkUiState(
+    val bookmarks: List<Bookmark> = emptyList(),
+    val isLoading: Boolean = true
+)
+
+@OptIn(FlowPreview::class)
+class SearchViewModel(
+    private val repository: VerseRepository,
+    private val prefs: UserPreferences
+) : ViewModel() {
+
+    // --- Input Flows from UI ---
+    val searchQuery = MutableStateFlow("")
+    val surahFilters = prefs.selectedSurahs.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+    val allWordsRequired = prefs.allWordsRequired.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    val loadHadiths = prefs.loadHadiths.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    val loadVerses = prefs.loadVerses.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    private val page = MutableStateFlow(0)
+
+    // --- State for the UI ---
+    val bookmarkedVerseIds = repository.getBookmarkedIds()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
+    val bookmarkUiState = repository.getAllBookmarks()
+        .map { bookmarks -> BookmarkUiState(bookmarks = bookmarks, isLoading = false) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), BookmarkUiState(isLoading = true))
+
+    // The main reactive pipeline that produces the search UI state
+    val uiState: StateFlow<SearchUiState> = combine(
+        searchQuery.debounce(Constants.SEARCH_DEBOUNCE_MS),
+        surahFilters,
+        allWordsRequired,
+        loadHadiths,
+        loadVerses,
+    ) { query, filters, allWords, hadiths, verses ->
+        if (query.isBlank()) null else SearchTrigger(query, SearchParams(filters, allWords, hadiths, verses))
+    }
+        .distinctUntilChanged()
+        .flatMapLatest { trigger ->
+            if (trigger == null) {
+                return@flatMapLatest flowOf(SearchUiState.EmptyQuery)
+            }
+
+            // This inner flow manages pagination for a single search trigger.
+            // It's restarted by flatMapLatest whenever the trigger changes.
+            page.flatMapConcat { pageNum ->
+                flow<PageFetchResult> {
+                    try {
+                        val results = repository.search(
+                            query = trigger.query,
+                            surahFilters = trigger.params.filters,
+                            allWordsRequired = trigger.params.allWordsRequired,
+                            page = pageNum,
+                            pageSize = Constants.PAGINATION_PAGE_SIZE,
+                            loadHadiths = trigger.params.loadHadiths,
+                            loadVerses = trigger.params.loadVerses
+                        )
+                        emit(PageFetchResult.Success(results, pageNum))
+                    } catch (e: Exception) {
+                        Log.e("SearchViewModel", "Search failed for page $pageNum", e)
+                        emit(PageFetchResult.Error(e))
+                    }
+                }.onStart { emit(PageFetchResult.Loading) }
+            }.scan(SearchUiState.EmptyQuery as SearchUiState) { currentState, result ->
+                when (result) {
+                    is PageFetchResult.Loading -> {
+                        if (currentState is SearchUiState.Success) {
+                            currentState.copy(isLoadingMore = true)
+                        } else {
+                            SearchUiState.Loading
+                        }
+                    }
+                    is PageFetchResult.Error -> {
+                        SearchUiState.Error("Search failed: ${result.error.message}")
+                    }
+                    is PageFetchResult.Success -> {
+                        val currentResults = (currentState as? SearchUiState.Success)?.results ?: emptyList()
+                        val newItems = result.results.items
+
+                        val combinedResults = if (result.page == 0) {
+                            newItems // For the first page, replace the list
+                        } else {
+                            // Append to existing, ensuring no duplicates if flow restarts
+                            currentResults + newItems.filterNot { currentResults.any { old -> old.id == it.id } }
+                        }
+
+                        SearchUiState.Success(
+                            results = combinedResults,
+                            totalResults = result.results.totalCount,
+                            canLoadMore = result.results.hasNextPage,
+                            isLoadingMore = false,
+                            query = trigger.query
+                        )
+                    }
+                }
+            }
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = SearchUiState.EmptyQuery
+        )
+
+    // --- Helper data classes for the reactive stream ---
+
+    private data class SearchParams(
+        val filters: Set<String>,
+        val allWordsRequired: Boolean,
+        val loadHadiths: Boolean,
+        val loadVerses: Boolean
+    )
+
+    private data class SearchTrigger(val query: String, val params: SearchParams)
+
+    private sealed class PageFetchResult {
+        data object Loading : PageFetchResult()
+        data class Success(val results: VerseRepository.PagedResults, val page: Int) : PageFetchResult()
+        data class Error(val error: Throwable) : PageFetchResult()
+    }
+
+
+    // --- UI Event Handlers ---
+
+    fun onQueryChange(query: String) {
+        searchQuery.value = query
+        page.value = 0 // Reset pagination on new query
+    }
+
+    fun onSurahFilterChange(updatedFilters: Set<String>) {
+        viewModelScope.launch { prefs.saveSelectedSurahs(updatedFilters) }
+        page.value = 0
+    }
+
+    fun onAllWordsRequiredChange(isRequired: Boolean) {
+        viewModelScope.launch { prefs.saveAllWordsRequired(isRequired) }
+        page.value = 0
+    }
+
+    fun onFileSelectionChange(loadHadiths: Boolean, loadVerses: Boolean) {
+        viewModelScope.launch { prefs.saveFileSelection(loadHadiths, loadVerses) }
+        page.value = 0
+    }
+
+    fun onLoadMore() {
+        val current = uiState.value
+        if (current is SearchUiState.Success && current.canLoadMore && !current.isLoadingMore) {
+            page.value++
+        }
+    }
+
+    fun toggleBookmark(verseResult: VerseRepository.VerseSearchResult) {
+        viewModelScope.launch {
+            val query = (uiState.value as? SearchUiState.Success)?.query ?: ""
+            repository.toggleBookmark(verseResult, query)
+        }
+    }
+
+    // --- Public read-only values for UI ---
+    val allSurahNames: List<String> = repository.allSurahNames
+    val hadithSurahNames: Set<String> = repository.hadithSurahNames
+    val verseSurahNames: Set<String> = repository.verseSurahNames
+}
+
+class SearchViewModelFactory(
+    private val repository: VerseRepository,
+    private val userPreferences: UserPreferences
+) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(SearchViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return SearchViewModel(repository, userPreferences) as T
+        }
+        throw IllegalArgumentException("Unknown ViewModel class")
+    }
+}
+
+// --- file: UserPreferences.kt ---
+package com.ahm.mydalil.data.local.datastore
+
+import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringSetPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import com.ahm.mydalil.util.Constants
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+
+private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = Constants.PREFERENCES_NAME)
+
+class UserPreferences(private val context: Context) {
+
+    private object Keys {
+        val SELECTED_SURAHS = stringSetPreferencesKey("selected_surahs")
+        val ALL_WORDS_REQUIRED = booleanPreferencesKey("all_words_required")
+        val LOAD_HADITHS = booleanPreferencesKey("load_hadiths")
+        val LOAD_VERSES = booleanPreferencesKey("load_verses")
+    }
+
+    val selectedSurahs: Flow<Set<String>> = context.dataStore.data.map { prefs ->
+        prefs[Keys.SELECTED_SURAHS] ?: emptySet()
+    }
+
+    val allWordsRequired: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.ALL_WORDS_REQUIRED] ?: true // Default to true
+    }
+
+    val loadHadiths: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.LOAD_HADITHS] ?: true // Default to true
+    }
+
+    val loadVerses: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.LOAD_VERSES] ?: true // Default to true
+    }
+
+    suspend fun saveSelectedSurahs(surahs: Set<String>) {
+        context.dataStore.edit { it[Keys.SELECTED_SURAHS] = surahs }
+    }
+
+    suspend fun saveAllWordsRequired(isRequired: Boolean) {
+        context.dataStore.edit { it[Keys.ALL_WORDS_REQUIRED] = isRequired }
+    }
+
+    suspend fun saveFileSelection(loadHadiths: Boolean, loadVerses: Boolean) {
+        context.dataStore.edit {
+            it[Keys.LOAD_HADITHS] = loadHadiths
+            it[Keys.LOAD_VERSES] = loadVerses
+        }
+    }
+}
+
+
+// --- file: AppDatabase.kt ---
+package com.ahm.mydalil.data.local.room
+
+import android.content.Context
+import androidx.room.Database
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import com.ahm.mydalil.util.Constants
+
+@Database(entities = [Bookmark::class], version = 1, exportSchema = false)
+abstract class AppDatabase : RoomDatabase() {
+    abstract fun bookmarkDao(): BookmarkDao
+
+    companion object {
+        @Volatile
+        private var INSTANCE: AppDatabase? = null
+
+        fun getDatabase(context: Context): AppDatabase {
+            return INSTANCE ?: synchronized(this) {
+                val instance = Room.databaseBuilder(
+                    context.applicationContext,
+                    AppDatabase::class.java,
+                    Constants.DATABASE_NAME
+                ).build()
+                INSTANCE = instance
+                instance
+            }
+        }
+    }
+}
+
+
+// --- file: Bookmark.kt ---
+package com.ahm.mydalil.data.local.room
+
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+import com.ahm.mydalil.data.repository.VerseRepository
+
+@Entity(tableName = "bookmarks")
+data class Bookmark(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val verseId: Int, // Unique hashcode of the verse content
+    val surahNumber: Int,
+    val surahName: String,
+    val verseNumber: Int,
+    val verseText: String,
+    val createdAt: Long = System.currentTimeMillis(),
+    val query: String = "" // The search query that led to this bookmark
+) {
+    /** Provides a stable, unique ID for a bookmark, used for keys in LazyColumn. */
+    val stableId: Int get() = verseId
+}
+
+fun VerseRepository.VerseSearchResult.toBookmark(query: String): Bookmark {
+    return Bookmark(
+        verseId = this.id,
+        surahNumber = this.surahNumber,
+        surahName = this.surahName,
+        verseNumber = this.verse.verseNumber,
+        verseText = this.verse.verseText,
+        query = query
+    )
+}
+
+
+// --- file: BookmarkDao.kt ---
+package com.ahm.mydalil.data.local.room
+
+import androidx.room.Dao
+import androidx.room.Delete
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface BookmarkDao {
+    @Query("SELECT * FROM bookmarks ORDER BY createdAt DESC")
+    fun getAllBookmarks(): Flow<List<Bookmark>>
+
+    @Query("SELECT * FROM bookmarks WHERE verseId = :verseId")
+    suspend fun getBookmarkByVerseId(verseId: Int): Bookmark?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertBookmark(bookmark: Bookmark)
+
+    @Delete
+    suspend fun deleteBookmark(bookmark: Bookmark)
+
+    @Query("SELECT verseId FROM bookmarks")
+    fun getAllBookmarkedIds(): Flow<List<Int>>
+}
+
+
+// --- file: BookmarkScreen.kt ---
+package com.ahm.mydalil.ui.screens.bookmarks
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ahm.mydalil.data.local.room.Bookmark
+import com.ahm.mydalil.data.repository.VerseRepository
+import com.ahm.mydalil.ui.components.*
+import com.ahm.mydalil.ui.screens.detail.VerseDetailScreen
+import com.ahm.mydalil.ui.viewmodel.SearchViewModel
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun BookmarkScreen(viewModel: SearchViewModel, onNavigateBack: () -> Unit) {
+    val uiState by viewModel.bookmarkUiState.collectAsStateWithLifecycle()
+    var selectedBookmark by remember { mutableStateOf<Bookmark?>(null) }
+
+    fun navigateToBookmark(offset: Int) {
+        val bookmarks = uiState.bookmarks
+        val currentIndex = bookmarks.indexOf(selectedBookmark)
+        if (currentIndex != -1) {
+            val newIndex = (currentIndex + offset).coerceIn(0, bookmarks.lastIndex)
+            selectedBookmark = bookmarks.getOrNull(newIndex)
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Bookmarks") },
+                navigationIcon = {
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        when {
+            uiState.isLoading -> {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            }
+            uiState.bookmarks.isEmpty() -> {
+                Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                    Text("You have no bookmarks yet.")
+                }
+            }
+            else -> {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize().padding(padding),
+                    contentPadding = PaddingValues(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(items = uiState.bookmarks, key = { it.stableId }) { bookmark ->
+                        BookmarkItem(
+                            bookmark = bookmark,
+                            onBookmarkClick = { selectedBookmark = it },
+                            onRemoveBookmark = { bm ->
+                                // Create a dummy search result to toggle the bookmark
+                                val verseResult = VerseRepository.VerseSearchResult(
+                                    verse = com.ahm.mydalil.data.model.Verse(bm.verseNumber, bm.verseText),
+                                    surahName = bm.surahName,
+                                    surahNumber = bm.surahNumber
+                                )
+                                viewModel.toggleBookmark(verseResult)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // Detail Screen Overlay
+    AnimatedVisibility(
+        visible = selectedBookmark != null,
+        enter = fadeIn(animationSpec = tween(300)),
+        exit = fadeOut(animationSpec = tween(300))
+    ) {
+        selectedBookmark?.let { bookmark ->
+            val bookmarks = uiState.bookmarks
+            val currentIndex = bookmarks.indexOf(bookmark)
+
+            if (currentIndex != -1) {
+                VerseDetailScreen(
+                    verseContent = bookmark.toVerseContent(),
+                    currentIndex = currentIndex,
+                    totalCount = bookmarks.size,
+                    isBookmarked = true, // It's always bookmarked here
+                    onToggleBookmark = {
+                        val verseResult = VerseRepository.VerseSearchResult(
+                            verse = com.ahm.mydalil.data.model.Verse(bookmark.verseNumber, bookmark.verseText),
+                            surahName = bookmark.surahName,
+                            surahNumber = bookmark.surahNumber
+                        )
+                        viewModel.toggleBookmark(verseResult)
+                        selectedBookmark = null // Dismiss after removing
+                    },
+                    onNavigatePrevious = { navigateToBookmark(-1) },
+                    onNavigateNext = { navigateToBookmark(1) },
+                    onDismiss = { selectedBookmark = null }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BookmarkItem(
+    bookmark: Bookmark,
+    onBookmarkClick: (Bookmark) -> Unit,
+    onRemoveBookmark: (Bookmark) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable { onBookmarkClick(bookmark) },
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "${bookmark.surahNumber}.${bookmark.verseNumber} ${bookmark.surahName}",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = bookmark.verseText.take(120) + if (bookmark.verseText.length > 120) "..." else "",
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 3
+                )
+                if (bookmark.query.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Found with: \"${bookmark.query}\"",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            IconButton(onClick = { onRemoveBookmark(bookmark) }) {
+                Icon(
+                    imageVector = Icons.Default.Star,
+                    contentDescription = "Remove bookmark",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
+}
+
+
+// --- file: VerseDetailScreen.kt ---
+package com.ahm.mydalil.ui.screens.detail
+
+import android.annotation.SuppressLint
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import com.ahm.mydalil.ui.components.VerseContent
+
+@SuppressLint(
+    "UnusedContentLambdaTargetStateParameter"
+)
+@OptIn(ExperimentalAnimationApi::class)
+@Composable
+fun VerseDetailScreen(
+    verseContent: VerseContent,
+    currentIndex: Int,
+    totalCount: Int,
+    isBookmarked: Boolean,
+    onToggleBookmark: () -> Unit,
+    onNavigatePrevious: () -> Unit,
+    onNavigateNext: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    val fullTextToCopy = remember(verseContent) {
+        "${verseContent.verseText}\n\n${verseContent.surahName} - ${verseContent.verseNumber}"
+    }
+
+    BackHandler(onBack = onDismiss)
+
+    Surface(
+        modifier = Modifier.fillMaxSize().clickable(enabled = false, onClick = {}), // Consume clicks
+        color = MaterialTheme.colorScheme.surface
+    ) {
+        Column(Modifier.fillMaxSize().padding(16.dp)) {
+            // Top Control Bar
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                }
+                Text(
+                    "${currentIndex + 1} of $totalCount",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Row {
+                    IconButton(onClick = {
+                        clipboardManager.setText(AnnotatedString(fullTextToCopy))
+                        Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                    }) {
+                        Icon(Icons.Default.Share, "Share")
+                    }
+                    IconButton(onClick = onToggleBookmark) {
+                        Icon(
+                            imageVector = if (isBookmarked) Icons.Filled.Star else Icons.Outlined.Star,
+                            contentDescription = if (isBookmarked) "Remove bookmark" else "Add bookmark",
+                            tint = if (isBookmarked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            // Animated Content Area
+            Box(
+                modifier = Modifier.weight(1f).fillMaxWidth()
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures { _, dragAmount ->
+                            if (dragAmount > 50) onNavigatePrevious()
+                            if (dragAmount < -50) onNavigateNext()
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                AnimatedContent(
+                    targetState = currentIndex,
+                    transitionSpec = {
+                        val direction = if (targetState > initialState) 1 else -1
+                        slideInHorizontally(animationSpec = tween(30)) { it * direction } + fadeIn() togetherWith
+                                slideOutHorizontally(animationSpec = tween(30)) { -it * direction } + fadeOut() using
+                                SizeTransform(clip = false)
+                    },
+                    label = "VerseContentAnimation"
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        SelectionContainer {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    verseContent.verseText,
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(vertical = 16.dp)
+                                )
+                                Text(
+                                    "${verseContent.surahName} - ${verseContent.verseNumber}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(bottom = 16.dp)
+                                )
+                                if (verseContent.extraInfo.isNotBlank()) {
+                                    Card(
+                                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                                    ) {
+                                        Text(
+                                            verseContent.extraInfo,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            modifier = Modifier.padding(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Bottom Navigation Buttons
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilledTonalButton(
+                    onClick = onNavigatePrevious,
+                    enabled = currentIndex > 0,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Previous")
+                    Spacer(Modifier.width(8.dp))
+                    Text("Previous")
+                }
+                FilledTonalButton(
+                    onClick = onNavigateNext,
+                    enabled = currentIndex < totalCount - 1,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Next")
+                    Spacer(Modifier.width(8.dp))
+                    Icon(Icons.AutoMirrored.Filled.ArrowForward, "Next")
+                }
+            }
+        }
+    }
+}
+
+
+// --- file: SearchScreen.kt ---
+package com.ahm.mydalil.ui.screens.search
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.res.Resources
+import android.util.TypedValue
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ahm.mydalil.data.repository.VerseRepository
+import com.ahm.mydalil.ui.components.FilterPanel
+import com.ahm.mydalil.ui.components.SearchBar
+import com.ahm.mydalil.ui.components.SearchOptions
+import com.ahm.mydalil.ui.components.VerseCard
+import com.ahm.mydalil.ui.components.toVerseContent
+import com.ahm.mydalil.ui.screens.detail.VerseDetailScreen
+import com.ahm.mydalil.ui.viewmodel.SearchUiState
+import com.ahm.mydalil.ui.viewmodel.SearchViewModel
+import com.ahm.mydalil.util.Constants
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.map
+
+@SuppressLint("DiscouragedApi", "InternalInsetResource")
+fun getStatusBarHeight(context: Context): Float {
+    val resources: Resources = context.resources
+    val resourceId: Int = resources.getIdentifier("status_bar_height", "dimen", "android")
+    return (if (resourceId > 0) {
+        resources.getDimensionPixelSize(resourceId)
+    } else {
+        0
+    }).toFloat()
+}
+
+@Composable
+fun SearchScreen(
+    viewModel: SearchViewModel,
+    onNavigateToBookmarks: () -> Unit
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val surahFilters by viewModel.surahFilters.collectAsStateWithLifecycle()
+    val allWordsRequired by viewModel.allWordsRequired.collectAsStateWithLifecycle()
+    val loadHadiths by viewModel.loadHadiths.collectAsStateWithLifecycle()
+    val loadVerses by viewModel.loadVerses.collectAsStateWithLifecycle()
+    val bookmarkedIds by viewModel.bookmarkedVerseIds.collectAsStateWithLifecycle()
+
+    var selectedVerse by remember { mutableStateOf<VerseRepository.VerseSearchResult?>(null) }
+    var showFilters by remember { mutableStateOf(false) }
+
+    val currentResults = (uiState as? SearchUiState.Success)?.results ?: emptyList()
+
+    fun navigateToVerse(offset: Int) {
+        val currentIndex = currentResults.indexOf(selectedVerse)
+        if (currentIndex != -1) {
+            val newIndex = (currentIndex + offset).coerceIn(0, currentResults.lastIndex)
+            selectedVerse = currentResults.getOrNull(newIndex)
+        }
+    }
+//fun navigateToVerse(offset: Int) {
+//    if (currentResults.isEmpty()) return
+//
+//    val currentIndex = if (selectedVerse != null) {
+//        // Find by ID instead of object reference for more reliable matching
+//        currentResults.indexOfFirst { it.id == selectedVerse?.id }.takeIf { it != -1 } ?: 0
+//    } else {
+//        0
+//    }
+//
+//    val newIndex = (currentIndex + offset).coerceIn(0, currentResults.lastIndex)
+//    if (newIndex in currentResults.indices) {
+//        selectedVerse = currentResults[newIndex]
+//    }
+//}
+
+    val context = LocalContext.current
+
+    BackHandler(true, onBack = { showFilters = false } )
+
+    Scaffold(
+        topBar = {
+            Column {
+                Spacer(Modifier.height(30.dp))
+                SearchBar(
+                    query = searchQuery,
+                    onQueryChange = viewModel::onQueryChange,
+                    onBookmarkClick = onNavigateToBookmarks,
+                    onFilterClick = { showFilters = !showFilters }
+                )
+                SearchOptions(
+                    showFilters = showFilters,
+                    allWordsRequired = allWordsRequired,
+                    onAllWordsRequiredChange = viewModel::onAllWordsRequiredChange,
+                    loadHadiths = loadHadiths,
+                    loadVerses = loadVerses,
+                    onFileSelectionChange = viewModel::onFileSelectionChange,
+                )
+                AnimatedVisibility(
+                    visible = showFilters,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    enter = expandVertically(),
+                    exit = shrinkVertically()
+                ) {
+                    FilterPanel(
+                        allSurahNames = viewModel.allSurahNames,
+                        hadithSurahNames = viewModel.hadithSurahNames,
+                        verseSurahNames = viewModel.verseSurahNames,
+                        selectedSurahs = surahFilters,
+                        onFilterChanged = viewModel::onSurahFilterChange,
+                        loadHadiths = loadHadiths,
+                        loadVerses = loadVerses
+                    )
+                }
+            }
+        }
+    ) { padding ->
+        Box(modifier = Modifier.padding(padding)) {
+            ResultContent(
+                uiState = uiState,
+                bookmarkedIds = bookmarkedIds,
+                onVerseClick = { result -> selectedVerse = result },
+                onToggleBookmark = viewModel::toggleBookmark,
+                onLoadMore = viewModel::onLoadMore
+            )
+        }
+    }
+
+    // Detail Screen Overlay
+    AnimatedVisibility(
+        visible = selectedVerse != null,
+        enter = fadeIn(animationSpec = tween(300)),
+        exit = fadeOut(animationSpec = tween(300))
+    ) {
+        selectedVerse?.let { verse ->
+            val currentIndex = currentResults.indexOf(verse)
+            //val currentIndex = currentResults.indexOfFirst { it.id == verse.id }.takeIf { it != -1 } ?: 0
+            if (currentIndex != -1) {
+                VerseDetailScreen(
+                    verseContent = verse.toVerseContent(),
+                    currentIndex = currentIndex,
+                    totalCount = currentResults.size,
+                    isBookmarked = bookmarkedIds.contains(verse.id),
+                    onToggleBookmark = { viewModel.toggleBookmark(verse) },
+                    onNavigatePrevious = { navigateToVerse(-1) },
+                    onNavigateNext = { navigateToVerse(1) },
+                    onDismiss = { selectedVerse = null }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ResultContent(
+    uiState: SearchUiState,
+    bookmarkedIds: Set<Int>,
+    onVerseClick: (VerseRepository.VerseSearchResult) -> Unit,
+    onToggleBookmark: (VerseRepository.VerseSearchResult) -> Unit,
+    onLoadMore: () -> Unit
+) {
+    when (uiState) {
+        is SearchUiState.Loading -> {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        }
+        is SearchUiState.Success -> {
+            val listState = rememberLazyListState()
+
+            // Pagination trigger
+            LaunchedEffect(listState) {
+                snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
+                    .filterNotNull()
+                    .map { lastIndex -> lastIndex >= uiState.results.size - Constants.PAGINATION_PREFETCH_DISTANCE }
+                    .distinctUntilChanged()
+                    .filter { shouldLoadMore -> shouldLoadMore }
+                    .collect { onLoadMore() }
+            }
+
+            if (uiState.results.isEmpty()) {
+                Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                    Text("No results found for \"${uiState.query}\"")
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    item {
+                        Text(
+                            "${uiState.totalResults} results found",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                    items(items = uiState.results, key = { it.id }) { result ->
+                        VerseCard(
+                            result = result,
+                            isBookmarked = bookmarkedIds.contains(result.id),
+                            highlightKeywords = uiState.query.split(Regex("\\s+")),
+                            onClick = { onVerseClick(result) },
+                            onToggleBookmark = { onToggleBookmark(result) },
+                            modifier = Modifier.animateItemPlacement()
+                        )
+                    }
+                    if (uiState.isLoadingMore) {
+                        item {
+                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(strokeWidth = 3.dp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        is SearchUiState.Error -> {
+            Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                Text(uiState.message, color = MaterialTheme.colorScheme.error)
+            }
+        }
+        is SearchUiState.EmptyQuery -> {
+            Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                Text("Enter a query to start searching.", style = MaterialTheme.typography.bodyLarge)
+            }
+        }
+    }
+}
+
+

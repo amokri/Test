@@ -1,0 +1,43 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- White circle background with subtle shadow -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,54m-50,0a50,50 0 1,1 100,0a50,50 0 1,1 -100,0"
+        android:strokeWidth="1"
+        android:strokeColor="#E0E0E0" />
+
+    <!-- Arabic text: دليل -->
+    <!-- Letter د (curved with flourish) -->
+    <path
+        android:fillColor="#0288D1"
+        android:pathData="M72,30 L82,30 C84,30 85,32 85,34 L85,64 C85,67 83,68 80,68 C78,68 76,67 76,65 L76,40 C76,38 74,38 73,38 L72,38 Z"
+        android:strokeWidth="1.2"
+        android:strokeColor="#000000" />
+
+    <!-- Letter ل (tall and slim) -->
+    <path
+        android:fillColor="#0288D1"
+        android:pathData="M58,28 L66,28 C68,28 68,30 68,32 L68,66 C68,68 66,68 64,68 L58,68 Z"
+        android:strokeWidth="1.2"
+        android:strokeColor="#000000" />
+
+    <!-- Letter ي (with tail) -->
+    <path
+        android:fillColor="#388E3C"
+        android:pathData="M44,28 L52,28 C54,28 54,30 54,32 L54,60 C54,62 52,62 50,62 L46,62 C44,62 44,64 44,66 C44,68 42,68 40,66 C38,64 38,62 40,60 L44,60 Z"
+        android:strokeWidth="1.2"
+        android:strokeColor="#000000" />
+
+    <!-- Letter ل (tall and slim) -->
+    <path
+        android:fillColor="#388E3C"
+        android:pathData="M30,28 L38,28 C40,28 40,30 40,32 L40,66 C40,68 38,68 36,68 L30,68 Z"
+        android:strokeWidth="1.2"
+        android:strokeColor="#000000" />
+
+</vector>

@@ -1,0 +1,268 @@
+package com.ahm.mydalil.ui.screens.search
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.res.Resources
+import android.util.TypedValue
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ahm.mydalil.data.repository.VerseRepository
+import com.ahm.mydalil.ui.components.FilterPanel
+import com.ahm.mydalil.ui.components.SearchBar
+import com.ahm.mydalil.ui.components.SearchOptions
+import com.ahm.mydalil.ui.components.VerseCard
+import com.ahm.mydalil.ui.components.toVerseContent
+import com.ahm.mydalil.ui.screens.detail.VerseDetailScreen
+import com.ahm.mydalil.ui.viewmodel.SearchUiState
+import com.ahm.mydalil.ui.viewmodel.SearchViewModel
+import com.ahm.mydalil.util.Constants
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+
+@SuppressLint("DiscouragedApi", "InternalInsetResource")
+fun getStatusBarHeight(context: Context): Float {
+    val resources: Resources = context.resources
+    val resourceId: Int = resources.getIdentifier("status_bar_height", "dimen", "android")
+    return (if (resourceId > 0) {
+        resources.getDimensionPixelSize(resourceId)
+    } else {
+        0
+    }).toFloat()
+}
+
+@Composable
+fun SearchScreen(
+    viewModel: SearchViewModel,
+    onNavigateToBookmarks: () -> Unit
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val surahFilters by viewModel.surahFilters.collectAsStateWithLifecycle()
+    val allWordsRequired by viewModel.allWordsRequired.collectAsStateWithLifecycle()
+    val loadHadiths by viewModel.loadHadiths.collectAsStateWithLifecycle()
+    val loadVerses by viewModel.loadVerses.collectAsStateWithLifecycle()
+    val bookmarkedIds by viewModel.bookmarkedVerseIds.collectAsStateWithLifecycle()
+    val coroutineScope = rememberCoroutineScope()
+    var showFilters by remember { mutableStateOf(false) }
+
+    // This is the list of verses that the detail screen will navigate through.
+    // It can be populated by either the search results or a full surah listing.
+    var detailViewVerseList by remember { mutableStateOf<List<VerseRepository.VerseSearchResult>>(emptyList()) }
+    // This is the specific verse from the list that is currently being displayed.
+    var selectedVerse by remember { mutableStateOf<VerseRepository.VerseSearchResult?>(null) }
+
+    // This is the data from the main search query
+    val searchResults = (uiState as? SearchUiState.Success)?.results ?: emptyList()
+
+    fun navigateInDetailView(offset: Int) {
+        if (detailViewVerseList.isEmpty()) return
+        val currentIndex = detailViewVerseList.indexOf(selectedVerse)
+        if (currentIndex != -1) {
+            val newIndex = (currentIndex + offset).coerceIn(0, detailViewVerseList.lastIndex)
+            selectedVerse = detailViewVerseList.getOrNull(newIndex)
+        }
+    }
+
+    BackHandler(enabled = showFilters, onBack = { showFilters = false } )
+
+    Scaffold(
+        topBar = {
+            Column {
+                Spacer(Modifier.height(30.dp))
+                SearchBar(
+                    query = searchQuery,
+                    onQueryChange = viewModel::onQueryChange,
+                    onBookmarkClick = onNavigateToBookmarks,
+                    onFilterClick = { showFilters = !showFilters }
+                )
+                SearchOptions(
+                    showFilters = showFilters,
+                    allWordsRequired = allWordsRequired,
+                    onAllWordsRequiredChange = viewModel::onAllWordsRequiredChange,
+                    loadHadiths = loadHadiths,
+                    loadVerses = loadVerses,
+                    onFileSelectionChange = viewModel::onFileSelectionChange,
+                )
+                AnimatedVisibility(
+                    visible = showFilters,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    enter = expandVertically(),
+                    exit = shrinkVertically()
+                ) {
+                    FilterPanel(
+                        allSurahNames = viewModel.allSurahNames,
+                        hadithSurahNames = viewModel.hadithSurahNames,
+                        verseSurahNames = viewModel.verseSurahNames,
+                        selectedSurahs = surahFilters,
+                        onFilterChanged = viewModel::onSurahFilterChange,
+                        onSurahLongPress = { surahName ->
+                            coroutineScope.launch {
+                                val verses = viewModel.getVersesForSurah(surahName)
+                                if (verses.isNotEmpty()) {
+                                    detailViewVerseList = verses
+                                    selectedVerse = verses.first()
+                                    showFilters = false // Close filter panel after selection
+                                }
+                            }
+                        },
+                        loadHadiths = loadHadiths,
+                        loadVerses = loadVerses
+                    )
+                }
+            }
+        }
+    ) { padding ->
+        Box(modifier = Modifier.padding(padding)) {
+            ResultContent(
+                uiState = uiState,
+                bookmarkedIds = bookmarkedIds,
+                onVerseClick = { result ->
+                    detailViewVerseList = searchResults
+                    selectedVerse = result
+                },
+                onToggleBookmark = viewModel::toggleBookmark,
+                onLoadMore = viewModel::onLoadMore
+            )
+        }
+    }
+
+    // Detail Screen Overlay
+    AnimatedVisibility(
+        visible = selectedVerse != null,
+        enter = fadeIn(animationSpec = tween(300)),
+        exit = fadeOut(animationSpec = tween(300))
+    ) {
+        selectedVerse?.let { verse ->
+            val currentIndex = detailViewVerseList.indexOfFirst { it.id == verse.id }
+            if (currentIndex != -1) {
+                VerseDetailScreen(
+                    verseContent = verse.toVerseContent(),
+                    currentIndex = currentIndex,
+                    totalCount = detailViewVerseList.size,
+                    isBookmarked = bookmarkedIds.contains(verse.id),
+                    onToggleBookmark = { viewModel.toggleBookmark(verse) },
+                    onNavigatePrevious = { navigateInDetailView(-1) },
+                    onNavigateNext = { navigateInDetailView(1) },
+                    onDismiss = { selectedVerse = null }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ResultContent(
+    uiState: SearchUiState,
+    bookmarkedIds: Set<Int>,
+    onVerseClick: (VerseRepository.VerseSearchResult) -> Unit,
+    onToggleBookmark: (VerseRepository.VerseSearchResult) -> Unit,
+    onLoadMore: () -> Unit
+) {
+    when (uiState) {
+        is SearchUiState.Loading -> {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        }
+        is SearchUiState.Success -> {
+            val listState = rememberLazyListState()
+
+            // Pagination trigger
+            LaunchedEffect(listState) {
+                snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
+                    .filterNotNull()
+                    .map { lastIndex -> lastIndex >= uiState.results.size - Constants.PAGINATION_PREFETCH_DISTANCE }
+                    .distinctUntilChanged()
+                    .filter { shouldLoadMore -> shouldLoadMore }
+                    .collect { onLoadMore() }
+            }
+
+            if (uiState.results.isEmpty()) {
+                Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                    Text("No results found for \"${uiState.query}\"")
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    item {
+                        Text(
+                            "${uiState.totalResults} results found",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                    items(items = uiState.results, key = { it.id }) { result ->
+                        VerseCard(
+                            result = result,
+                            isBookmarked = bookmarkedIds.contains(result.id),
+                            highlightKeywords = uiState.query.split(Regex("\\s+")),
+                            onClick = { onVerseClick(result) },
+                            onToggleBookmark = { onToggleBookmark(result) },
+                            modifier = Modifier.animateItemPlacement()
+                        )
+                    }
+                    if (uiState.isLoadingMore) {
+                        item {
+                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(strokeWidth = 3.dp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        is SearchUiState.Error -> {
+            Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                Text(uiState.message, color = MaterialTheme.colorScheme.error)
+            }
+        }
+        is SearchUiState.EmptyQuery -> {
+            Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                Text("Enter a query to start searching.", style = MaterialTheme.typography.bodyLarge)
+            }
+        }
+    }
+}

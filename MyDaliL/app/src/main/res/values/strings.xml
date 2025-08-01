@@ -1,3 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- App Name -->
     <string name="app_name">MyDaliL</string>
+    
+    <!-- Surah List -->
+    <string name="select_surah">Pilih Surah</string>
+    <string name="action_view">Lihat</string>
+    
+    <!-- Search -->
+    <string name="search_hint">Cari ayat... (regex didukung)</string>
+    <string name="global_search">Pencarian Global</string>
+    <string name="search">Cari</string>
+    <string name="search_min_length">Masukkan minimal %d karakter</string>
+    
+    <!-- Messages -->
+    <string name="no_results_found">Tidak ada hasil yang ditemukan</string>
+    <string name="invalid_regex">Pola regex tidak valid</string>
+    <string name="search_error">Kesalahan pencarian: %s</string>
+    
+    <!-- Actions -->
+    <string name="scroll_to_top">Ke atas</string>
+    
+    <!-- Errors -->
+    <string name="error_loading_data">Gagal memuat data</string>
 </resources>
