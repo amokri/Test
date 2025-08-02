@@ -1,3 +1,5 @@
+import org.gradle.kotlin.dsl.implementation
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.jetbrains.kotlin.android)
@@ -99,5 +101,23 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 
     // Swipe
-    implementation("androidx.compose.foundation:foundation:1.7.0-beta02")
+    //implementation("androidx.compose.foundation:foundation:1.7.0-beta02")
+    implementation(libs.androidx.compose.foundation)
+
+    // Windows size
+    implementation("androidx.compose.material3:material3-window-size-class")
+
+    implementation("androidx.room:room-runtime:2.6.1")
+    ksp("androidx.room:room-compiler:2.6.1")
+
+    val room_version = "2.6.1"
+
+    implementation("androidx.room:room-runtime:$room_version")
+    annotationProcessor("androidx.room:room-compiler:$room_version")
+    // To use Kotlin Symbol Processing (KSP)
+    ksp("androidx.room:room-compiler:$room_version")
+    // optional - Kotlin Extensions and Coroutines support for Room
+    implementation("androidx.room:room-ktx:$room_version")
+    // optional - FTS support
+    implementation("androidx.sqlite:sqlite-ktx:2.4.0")
 }

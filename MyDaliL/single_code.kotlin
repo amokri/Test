@@ -5,27 +5,32 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.core.view.WindowCompat
 import com.ahm.mydalil.data.local.datastore.UserPreferences
 import com.ahm.mydalil.data.repository.VerseRepository
 import com.ahm.mydalil.ui.navigation.AppNavigator
 import com.ahm.mydalil.ui.theme.MyDalilTheme
 import com.ahm.mydalil.ui.viewmodel.SearchViewModel
-import com.ahm.mydalil.ui.viewmodel.SearchViewModelFactory
+//import com.ahm.mydalil.ui.viewmodel.SearchViewModelFactory
+import dagger.hilt.android.AndroidEntryPoint
 
+@AndroidEntryPoint // Add this annotation
 class MainActivity : ComponentActivity() {
-
+    // Hilt will now provide the ViewModel automatically
+    private val viewModel: SearchViewModel by viewModels()
     override fun onCreate(savedInstanceState: Bundle?) {
+        //WindowCompat.setDecorFitsSystemWindows(window, false)
         super.onCreate(savedInstanceState)
 
-        // Manual Dependency Injection
-        val repository = VerseRepository.getInstance(this)
-        val userPreferences = UserPreferences(this)
-        val viewModel: SearchViewModel by viewModels {
-            SearchViewModelFactory(
-                repository,
-                userPreferences
-            )
-        }
+//        // Manual Dependency Injection
+//        val repository = VerseRepository.getInstance(this)
+//        val userPreferences = UserPreferences(this)
+//        val viewModel: SearchViewModel by viewModels {
+//            SearchViewModelFactory(
+//                repository,
+//                userPreferences
+//            )
+//        }
 
         setContent {
             MyDalilTheme {
@@ -55,6 +60,47 @@ class MyDalilApplication : Application() {
     }
 }
 
+
+// --- file: AppModule.kt ---
+package com.ahm.mydalil.di
+
+import android.content.Context
+import com.ahm.mydalil.data.local.datastore.UserPreferences
+import com.ahm.mydalil.data.local.room.AppDatabase
+import com.ahm.mydalil.data.repository.VerseRepository
+import dagger.Module
+import dagger.Provides
+import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
+import dagger.hilt.components.SingletonComponent
+import javax.inject.Singleton
+
+@Module
+@InstallIn(SingletonComponent::class)
+object AppModule {
+
+    @Provides
+    @Singleton
+    fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
+        return AppDatabase.getDatabase(context)
+    }
+
+    @Provides
+    @Singleton
+    fun provideUserPreferences(@ApplicationContext context: Context): UserPreferences {
+        return UserPreferences(context)
+    }
+
+    @Provides
+    @Singleton
+    fun provideVerseRepository(
+        @ApplicationContext context: Context,
+        db: AppDatabase
+    ): VerseRepository {
+        // The getInstance method already handles the logic, we just use it here
+        return VerseRepository.getInstance(context)
+    }
+}
 
 // --- file: Constants.kt ---
 package com.ahm.mydalil.util
@@ -145,7 +191,7 @@ import com.ahm.mydalil.data.local.room.toBookmark
 import com.ahm.mydalil.data.model.Surah
 import com.ahm.mydalil.data.model.Verse
 import com.ahm.mydalil.util.Constants
-import com.google.firebase.crashlytics.buildtools.reloc.com.google.common.reflect.TypeToken
+import com.google.gson.reflect.TypeToken
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -897,6 +943,8 @@ import com.ahm.mydalil.util.Constants
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
 
 // --- UI State Definitions ---
 
@@ -919,10 +967,12 @@ data class BookmarkUiState(
 )
 
 @OptIn(FlowPreview::class)
-class SearchViewModel(
+@HiltViewModel
+class SearchViewModel @Inject constructor(
     private val repository: VerseRepository,
     private val prefs: UserPreferences
-) : ViewModel() {
+) : ViewModel()
+{
 
     // --- Input Flows from UI ---
     val searchQuery = MutableStateFlow("")
@@ -1079,18 +1129,19 @@ class SearchViewModel(
     val verseSurahNames: Set<String> = repository.verseSurahNames
 }
 
-class SearchViewModelFactory(
-    private val repository: VerseRepository,
-    private val userPreferences: UserPreferences
-) : ViewModelProvider.Factory {
-    override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        if (modelClass.isAssignableFrom(SearchViewModel::class.java)) {
-            @Suppress("UNCHECKED_CAST")
-            return SearchViewModel(repository, userPreferences) as T
-        }
-        throw IllegalArgumentException("Unknown ViewModel class")
-    }
-}
+//class SearchViewModelFactory(
+//    private val repository: VerseRepository,
+//    private val userPreferences: UserPreferences
+//) : ViewModelProvider.Factory
+//{
+//    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+//        if (modelClass.isAssignableFrom(SearchViewModel::class.java)) {
+//            @Suppress("UNCHECKED_CAST")
+//            return SearchViewModel(repository, userPreferences) as T
+//        }
+//        throw IllegalArgumentException("Unknown ViewModel class")
+//    }
+//}
 
 // --- file: UserPreferences.kt ---
 package com.ahm.mydalil.data.local.datastore
@@ -1245,6 +1296,85 @@ interface BookmarkDao {
     fun getAllBookmarkedIds(): Flow<List<Int>>
 }
 
+
+// --- file: Entities.kt ---
+package com.ahm.mydalil.data.local.room
+
+import androidx.room.Entity
+import androidx.room.Fts4
+import androidx.room.PrimaryKey
+
+@Entity(tableName = "surahs")
+data class SurahEntity(
+    @PrimaryKey val surahNumber: Int,
+    val surahName: String
+)
+
+@Entity(tableName = "verses")
+@Fts4
+data class VerseEntity(
+    @PrimaryKey(autoGenerate = true)
+    val rowid: Int = 0,
+    val surahNumber: Int,
+    val verseNumber: Int,
+    val verseText: String
+)
+
+// --- file: VerseDao.kt ---
+package com.ahm.mydalil.data.local.room
+
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import androidx.room.Transaction
+import com.ahm.mydalil.data.repository.VerseRepository
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface VerseDao {
+    @Transaction
+    @Query("""
+        SELECT v.verseNumber, v.verseText, s.surahName, s.surahNumber
+        FROM verses v
+        JOIN surahs s ON v.surahNumber = s.surahNumber
+        WHERE v.rowid IN (
+            SELECT rowid FROM verses
+            WHERE verses MATCH :query
+        )
+        AND (:surahFilters IS NULL OR s.surahName IN (:surahFilters))
+        LIMIT :pageSize OFFSET :offset
+    """)
+    suspend fun search(
+        query: String,
+        surahFilters: Set<String>?,
+        pageSize: Int,
+        offset: Int
+    ): List<VerseRepository.VerseSearchResult>
+
+    @Query("""
+        SELECT COUNT(*) FROM verses v
+        JOIN surahs s ON v.surahNumber = s.surahNumber
+        WHERE v.rowid IN (
+            SELECT rowid FROM verses
+            WHERE verses MATCH :query
+        )
+        AND (:surahFilters IS NULL OR s.surahName IN (:surahFilters))
+    """)
+    suspend fun getSearchTotalCount(query: String, surahFilters: Set<String>?): Int
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertSurahs(surahs: List<SurahEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertVerses(verses: List<VerseEntity>)
+
+    @Query("SELECT COUNT(*) FROM surahs")
+    suspend fun getSurahCount(): Int
+
+    @Query("SELECT surahName FROM surahs ORDER BY surahNumber ASC")
+    fun getAllSurahNames(): Flow<List<String>>
+}
 
 // --- file: BookmarkScreen.kt ---
 package com.ahm.mydalil.ui.screens.bookmarks
@@ -1476,6 +1606,8 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -1621,6 +1753,12 @@ fun VerseDetailScreen(
                     },
                     label = "VerseContentAnimation"
                 ) {
+//                val pagerState = rememberPagerState(
+//                    initialPage = currentIndex,
+//                    pageCount = { totalCount }
+//                )
+//
+//                HorizontalPager(state = pagerState) { pageIndex ->
                     Column(
                         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1660,7 +1798,7 @@ fun VerseDetailScreen(
 
             // Bottom Navigation Buttons
             Row(
-                Modifier.fillMaxWidth().padding(vertical = 8.dp).padding(bottom = 16.dp),
+                Modifier.fillMaxWidth(),//.padding(vertical = 8.dp),//.padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilledTonalButton(
@@ -1882,7 +2020,7 @@ fun SearchScreen(
     Scaffold(
         topBar = {
             Column {
-                Spacer(Modifier.height(30.dp))
+                //Spacer(Modifier.height(30.dp))
                 SearchBar(
                     query = searchQuery,
                     onQueryChange = viewModel::onQueryChange,

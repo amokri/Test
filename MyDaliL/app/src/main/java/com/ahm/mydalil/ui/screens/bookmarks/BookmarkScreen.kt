@@ -76,7 +76,8 @@ fun BookmarkScreen(viewModel: SearchViewModel, onNavigateBack: () -> Unit) {
                                 val verseResult = VerseRepository.VerseSearchResult(
                                     verse = com.ahm.mydalil.data.model.Verse(bm.verseNumber, bm.verseText),
                                     surahName = bm.surahName,
-                                    surahNumber = bm.surahNumber
+                                    surahNumber = bm.surahNumber,
+                                    source = bm.source
                                 )
                                 viewModel.toggleBookmark(verseResult)
                             }
@@ -107,7 +108,8 @@ fun BookmarkScreen(viewModel: SearchViewModel, onNavigateBack: () -> Unit) {
                         val verseResult = VerseRepository.VerseSearchResult(
                             verse = com.ahm.mydalil.data.model.Verse(bookmark.verseNumber, bookmark.verseText),
                             surahName = bookmark.surahName,
-                            surahNumber = bookmark.surahNumber
+                            surahNumber = bookmark.surahNumber,
+                            source = bookmark.source
                         )
                         viewModel.toggleBookmark(verseResult)
                         selectedBookmark = null // Dismiss after removing
@@ -136,11 +138,18 @@ private fun BookmarkItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "${bookmark.surahNumber}.${bookmark.verseNumber} ${bookmark.surahName}",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "${bookmark.surahNumber}.${bookmark.verseNumber} ${bookmark.surahName}",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                    SourceIndicator(
+                        isFromHadith = bookmark.source == "hadith",
+                        isFromVerse = bookmark.source == "verse"
+                    )
+                }
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = bookmark.verseText.take(120) + if (bookmark.verseText.length > 120) "..." else "",

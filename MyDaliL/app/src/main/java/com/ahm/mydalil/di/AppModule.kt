@@ -3,6 +3,8 @@ package com.ahm.mydalil.di
 import android.content.Context
 import com.ahm.mydalil.data.local.datastore.UserPreferences
 import com.ahm.mydalil.data.local.room.AppDatabase
+import com.ahm.mydalil.data.local.room.BookmarkDao
+import com.ahm.mydalil.data.local.room.VerseDao
 import com.ahm.mydalil.data.repository.VerseRepository
 import dagger.Module
 import dagger.Provides
@@ -23,6 +25,18 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideVerseDao(db: AppDatabase): VerseDao {
+        return db.verseDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideBookmarkDao(db: AppDatabase): BookmarkDao {
+        return db.bookmarkDao()
+    }
+
+    @Provides
+    @Singleton
     fun provideUserPreferences(@ApplicationContext context: Context): UserPreferences {
         return UserPreferences(context)
     }
@@ -30,10 +44,9 @@ object AppModule {
     @Provides
     @Singleton
     fun provideVerseRepository(
-        @ApplicationContext context: Context,
-        db: AppDatabase
+        verseDao: VerseDao,
+        bookmarkDao: BookmarkDao
     ): VerseRepository {
-        // The getInstance method already handles the logic, we just use it here
-        return VerseRepository.getInstance(context)
+        return VerseRepository(verseDao, bookmarkDao)
     }
 }

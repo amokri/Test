@@ -9,6 +9,7 @@ data class Bookmark(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     val verseId: Int, // Unique hashcode of the verse content
+    val source: String, // "hadith" or "verse"
     val surahNumber: Int,
     val surahName: String,
     val verseNumber: Int,
@@ -23,6 +24,7 @@ data class Bookmark(
 fun VerseRepository.VerseSearchResult.toBookmark(query: String): Bookmark {
     return Bookmark(
         verseId = this.id,
+        source = this.source,
         surahNumber = this.surahNumber,
         surahName = this.surahName,
         verseNumber = this.verse.verseNumber,

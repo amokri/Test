@@ -2,16 +2,15 @@ package com.ahm.mydalil.ui.viewmodel
 
 import android.util.Log
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.ahm.mydalil.data.local.datastore.UserPreferences
 import com.ahm.mydalil.data.local.room.Bookmark
 import com.ahm.mydalil.data.repository.VerseRepository
 import com.ahm.mydalil.util.Constants
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 
 // --- UI State Definitions ---
@@ -66,14 +65,11 @@ class SearchViewModel @Inject constructor(
         loadHadiths,
         loadVerses,
     ) { query, filters, allWords, hadiths, verses ->
-        if (query.isBlank()) null else SearchTrigger(query, SearchParams(filters, allWords, hadiths, verses))
+        // Trigger search even for blank query to show all items
+        SearchTrigger(query, SearchParams(filters, allWords, hadiths, verses))
     }
         .distinctUntilChanged()
         .flatMapLatest { trigger ->
-            if (trigger == null) {
-                return@flatMapLatest flowOf(SearchUiState.EmptyQuery)
-            }
-
             // This inner flow manages pagination for a single search trigger.
             // It's restarted by flatMapLatest whenever the trigger changes.
             page.flatMapConcat { pageNum ->
@@ -94,7 +90,7 @@ class SearchViewModel @Inject constructor(
                         emit(PageFetchResult.Error(e))
                     }
                 }.onStart { emit(PageFetchResult.Loading) }
-            }.scan(SearchUiState.EmptyQuery as SearchUiState) { currentState, result ->
+            }.scan(if (trigger.query.isBlank()) SearchUiState.EmptyQuery else SearchUiState.Loading) { currentState, result ->
                 when (result) {
                     is PageFetchResult.Loading -> {
                         if (currentState is SearchUiState.Success) {
@@ -114,7 +110,7 @@ class SearchViewModel @Inject constructor(
                             newItems // For the first page, replace the list
                         } else {
                             // Append to existing, ensuring no duplicates if flow restarts
-                            currentResults + newItems.filterNot { currentResults.any { old -> old.id == it.id } }
+                            (currentResults + newItems).distinctBy { it.id }
                         }
 
                         SearchUiState.Success(
@@ -192,21 +188,10 @@ class SearchViewModel @Inject constructor(
     }
 
     // --- Public read-only values for UI ---
-    val allSurahNames: List<String> = repository.allSurahNames
-    val hadithSurahNames: Set<String> = repository.hadithSurahNames
-    val verseSurahNames: Set<String> = repository.verseSurahNames
+    val allSurahNames: StateFlow<List<String>> = repository.allSurahNames
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val hadithSurahNames: StateFlow<Set<String>> = repository.hadithSurahNames.map { it.toSet() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+    val verseSurahNames: StateFlow<Set<String>> = repository.verseSurahNames.map { it.toSet() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
 }
-
-//class SearchViewModelFactory(
-//    private val repository: VerseRepository,
-//    private val userPreferences: UserPreferences
-//) : ViewModelProvider.Factory
-//{
-//    override fun <T : ViewModel> create(modelClass: Class<T>): T {
-//        if (modelClass.isAssignableFrom(SearchViewModel::class.java)) {
-//            @Suppress("UNCHECKED_CAST")
-//            return SearchViewModel(repository, userPreferences) as T
-//        }
-//        throw IllegalArgumentException("Unknown ViewModel class")
-//    }
-//}

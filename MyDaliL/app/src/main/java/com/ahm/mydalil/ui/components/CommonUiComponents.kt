@@ -297,10 +297,10 @@ fun FilterPanel(
 }
 
 @Composable
-private fun SourceIndicator(isFromHadith: Boolean, isFromVerse: Boolean) {
+fun SourceIndicator(isFromHadith: Boolean, isFromVerse: Boolean) {
     val hadithColor = Color(0xFF4CAF50)
     val verseColor = Color(0xFF2196F3)
-    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         if (isFromHadith) {
             Box(Modifier.size(8.dp).background(hadithColor, CircleShape))
         }
@@ -327,11 +327,19 @@ fun VerseCard(
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                Text(
-                    "${result.surahNumber}.${result.verse.verseNumber} ${result.surahName}",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Text(
+                        "${result.surahNumber}.${result.verse.verseNumber} ${result.surahName}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                    SourceIndicator(
+                        isFromHadith = result.source == "hadith",
+                        isFromVerse = result.source == "verse"
+                    )
+                }
+
                 IconButton(onClick = onToggleBookmark, modifier = Modifier.size(24.dp)) {
                     Icon(
                         imageVector = if (isBookmarked) Icons.Filled.Star else Icons.Outlined.Star,
@@ -359,26 +367,23 @@ fun HighlightedText(text: String, keywords: List<String>, style: TextStyle) {
     }
 
     val pattern = remember(keywords) {
-        keywords.filter { it.isNotBlank() }.joinToString("|") { Regex.escape(it) }.toRegex(RegexOption.IGNORE_CASE)
+        // Sanitize keywords for regex and create a single pattern
+        keywords.filter { it.isNotBlank() }
+            .joinToString("|") { Regex.escape(it.removeSuffix("*")) }
+            .toRegex(RegexOption.IGNORE_CASE)
     }
 
     val annotatedString = buildAnnotatedString {
-        var lastIndex = 0
+        append(text) // Append the full text initially
         pattern.findAll(text).forEach { matchResult ->
-            if (matchResult.range.first > lastIndex) {
-                append(text.substring(lastIndex, matchResult.range.first))
-            }
-            withStyle(style = SpanStyle(
-                background = MaterialTheme.colorScheme.primaryContainer,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
+            addStyle(
+                style = SpanStyle(
+                    background = MaterialTheme.colorScheme.primaryContainer,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                ),
+                start = matchResult.range.first,
+                end = matchResult.range.last + 1
             )
-            ) {
-                append(matchResult.value)
-            }
-            lastIndex = matchResult.range.last + 1
-        }
-        if (lastIndex < text.length) {
-            append(text.substring(lastIndex))
         }
     }
     Text(annotatedString, style = style)

@@ -80,6 +80,11 @@ fun SearchScreen(
     val loadHadiths by viewModel.loadHadiths.collectAsStateWithLifecycle()
     val loadVerses by viewModel.loadVerses.collectAsStateWithLifecycle()
     val bookmarkedIds by viewModel.bookmarkedVerseIds.collectAsStateWithLifecycle()
+
+    val allSurahNames by viewModel.allSurahNames.collectAsStateWithLifecycle()
+    val hadithSurahNames by viewModel.hadithSurahNames.collectAsStateWithLifecycle()
+    val verseSurahNames by viewModel.verseSurahNames.collectAsStateWithLifecycle()
+
     val coroutineScope = rememberCoroutineScope()
     var showFilters by remember { mutableStateOf(false) }
 
@@ -128,9 +133,9 @@ fun SearchScreen(
                     exit = shrinkVertically()
                 ) {
                     FilterPanel(
-                        allSurahNames = viewModel.allSurahNames,
-                        hadithSurahNames = viewModel.hadithSurahNames,
-                        verseSurahNames = viewModel.verseSurahNames,
+                        allSurahNames = allSurahNames,
+                        hadithSurahNames = hadithSurahNames,
+                        verseSurahNames = verseSurahNames,
                         selectedSurahs = surahFilters,
                         onFilterChanged = viewModel::onSurahFilterChange,
                         onSurahLongPress = { surahName ->
@@ -216,7 +221,7 @@ private fun ResultContent(
                     .collect { onLoadMore() }
             }
 
-            if (uiState.results.isEmpty()) {
+            if (uiState.results.isEmpty() && uiState.query.isNotBlank()) {
                 Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
                     Text("No results found for \"${uiState.query}\"")
                 }
@@ -227,12 +232,14 @@ private fun ResultContent(
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    item {
-                        Text(
-                            "${uiState.totalResults} results found",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
+                    if (uiState.results.isNotEmpty()) {
+                        item {
+                            Text(
+                                "${uiState.totalResults} results found",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
                     }
                     items(items = uiState.results, key = { it.id }) { result ->
                         VerseCard(
@@ -260,9 +267,16 @@ private fun ResultContent(
             }
         }
         is SearchUiState.EmptyQuery -> {
-            Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
-                Text("Enter a query to start searching.", style = MaterialTheme.typography.bodyLarge)
-            }
+            // This state is now used when the query is blank. We can show instructions
+            // or a subset of data. Currently, the search shows all results.
+            // If you want a message, you can add it here based on the total results.
+            ResultContent( // Recursively call with a Success state to show all items
+                uiState = SearchUiState.Success(emptyList(), 0, canLoadMore = true, isLoadingMore = false, query = ""),
+                bookmarkedIds = bookmarkedIds,
+                onVerseClick = onVerseClick,
+                onToggleBookmark = onToggleBookmark,
+                onLoadMore = onLoadMore
+            )
         }
     }
 }
