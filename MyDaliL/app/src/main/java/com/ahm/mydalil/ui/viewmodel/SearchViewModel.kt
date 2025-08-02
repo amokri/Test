@@ -11,6 +11,8 @@ import com.ahm.mydalil.util.Constants
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
 
 // --- UI State Definitions ---
 
@@ -33,10 +35,12 @@ data class BookmarkUiState(
 )
 
 @OptIn(FlowPreview::class)
-class SearchViewModel(
+@HiltViewModel
+class SearchViewModel @Inject constructor(
     private val repository: VerseRepository,
     private val prefs: UserPreferences
-) : ViewModel() {
+) : ViewModel()
+{
 
     // --- Input Flows from UI ---
     val searchQuery = MutableStateFlow("")
@@ -193,15 +197,16 @@ class SearchViewModel(
     val verseSurahNames: Set<String> = repository.verseSurahNames
 }
 
-class SearchViewModelFactory(
-    private val repository: VerseRepository,
-    private val userPreferences: UserPreferences
-) : ViewModelProvider.Factory {
-    override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        if (modelClass.isAssignableFrom(SearchViewModel::class.java)) {
-            @Suppress("UNCHECKED_CAST")
-            return SearchViewModel(repository, userPreferences) as T
-        }
-        throw IllegalArgumentException("Unknown ViewModel class")
-    }
-}
+//class SearchViewModelFactory(
+//    private val repository: VerseRepository,
+//    private val userPreferences: UserPreferences
+//) : ViewModelProvider.Factory
+//{
+//    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+//        if (modelClass.isAssignableFrom(SearchViewModel::class.java)) {
+//            @Suppress("UNCHECKED_CAST")
+//            return SearchViewModel(repository, userPreferences) as T
+//        }
+//        throw IllegalArgumentException("Unknown ViewModel class")
+//    }
+//}

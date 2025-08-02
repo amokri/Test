@@ -56,6 +56,8 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -201,6 +203,12 @@ fun VerseDetailScreen(
                     },
                     label = "VerseContentAnimation"
                 ) {
+//                val pagerState = rememberPagerState(
+//                    initialPage = currentIndex,
+//                    pageCount = { totalCount }
+//                )
+//
+//                HorizontalPager(state = pagerState) { pageIndex ->
                     Column(
                         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                         horizontalAlignment = Alignment.CenterHorizontally,

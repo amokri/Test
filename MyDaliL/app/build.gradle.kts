@@ -97,4 +97,7 @@ dependencies {
     // --- Debug Dependencies ---
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+
+    // Swipe
+    implementation("androidx.compose.foundation:foundation:1.7.0-beta02")
 }
