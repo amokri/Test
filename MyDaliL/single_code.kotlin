@@ -164,7 +164,7 @@ class VerseRepository private constructor(
     private val hadithData: List<Surah> by lazy { loadDataFromFile(Constants.HADITHS_DB_FILE) }
     private val verseData: List<Surah> by lazy { loadDataFromFile(Constants.VERSES_DB_FILE) }
 
-//    val allSurahNames: List<String> by lazy {
+    //    val allSurahNames: List<String> by lazy {
 //        (hadithData.map { it.surahName } + verseData.map { it.surahName }).distinct().sorted()
 //    }
     val allSurahNames: List<String> by lazy {
@@ -268,6 +268,17 @@ class VerseRepository private constructor(
         )
     }
 
+    suspend fun getVersesForSurah(surahName: String): List<VerseSearchResult> = withContext(Dispatchers.IO) {
+        val allData = hadithData + verseData
+        allData
+            .filter { it.surahName.equals(surahName, ignoreCase = true) }
+            .flatMap { surah ->
+                surah.surahVerses.map { verse ->
+                    VerseSearchResult(verse, surah.surahName, surah.surahNumber)
+                }
+            }
+    }
+
     // --- Bookmark Functions ---
 
     fun getAllBookmarks(): Flow<List<Bookmark>> = db.bookmarkDao().getAllBookmarks()
@@ -298,16 +309,17 @@ class VerseRepository private constructor(
     }
 }
 
-
 // --- file: CommonUiComponents.kt ---
 package com.ahm.mydalil.ui.components
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -528,6 +540,7 @@ private fun SourceSelector(
 
 
 // --- Component: FilterPanel ---
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FilterPanel(
     allSurahNames: List<String>,
@@ -535,6 +548,7 @@ fun FilterPanel(
     verseSurahNames: Set<String>,
     selectedSurahs: Set<String>,
     onFilterChanged: (Set<String>) -> Unit,
+    onSurahLongPress: (String) -> Unit,
     loadHadiths: Boolean,
     loadVerses: Boolean
 ) {
@@ -566,12 +580,20 @@ fun FilterPanel(
                     val isFromVerse = surahName in verseSurahNames
                     if ((isFromHadith && loadHadiths) || (isFromVerse && loadVerses)) {
                         Row(
-                            modifier = Modifier.fillMaxWidth().clickable {
-                                val newSelection = selectedSurahs.toMutableSet()
-                                if (selectedSurahs.contains(surahName)) newSelection.remove(surahName)
-                                else newSelection.add(surahName)
-                                onFilterChanged(newSelection)
-                            }.padding(vertical = 4.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .combinedClickable(
+                                    onClick = {
+                                        val newSelection = selectedSurahs.toMutableSet()
+                                        if (selectedSurahs.contains(surahName)) newSelection.remove(
+                                            surahName
+                                        )
+                                        else newSelection.add(surahName)
+                                        onFilterChanged(newSelection)
+                                    },
+                                    onLongClick = { onSurahLongPress(surahName) }
+                                )
+                                .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Checkbox(checked = selectedSurahs.contains(surahName), onCheckedChange = null)
@@ -704,7 +726,6 @@ fun Bookmark.toVerseContent(): VerseContent = object : VerseContent {
         )}")
     }
 }
-
 
 // --- file: AppNavigator.kt ---
 package com.ahm.mydalil.ui.navigation
@@ -1046,6 +1067,10 @@ class SearchViewModel(
             val query = (uiState.value as? SearchUiState.Success)?.query ?: ""
             repository.toggleBookmark(verseResult, query)
         }
+    }
+
+    suspend fun getVersesForSurah(surahName: String): List<VerseRepository.VerseSearchResult> {
+        return repository.getVersesForSurah(surahName)
     }
 
     // --- Public read-only values for UI ---
@@ -1446,6 +1471,24 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ahm.mydalil.ui.components.VerseContent
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.composed
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @SuppressLint(
     "UnusedContentLambdaTargetStateParameter"
@@ -1464,9 +1507,42 @@ fun VerseDetailScreen(
 ) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
-    val fullTextToCopy = remember(verseContent) {
-        "${verseContent.verseText}\n\n${verseContent.surahName} - ${verseContent.verseNumber}"
-    }
+//    val fullTextToCopy = remember(verseContent) {
+//        "${verseContent.verseText}\n\n${verseContent.surahName} - ${verseContent.verseNumber}"
+//    }
+    val (mainText, reference) =
+        remember(
+            verseContent.verseText
+        ) {
+            verseContent.verseText.split(
+                "(HR.",
+                limit = 2
+            )
+                .let { parts ->
+                    if (parts.size > 1) parts[0].trim() to "(HR.${parts[1].trim()}"
+                    else parts[0].trim() to null
+                }
+        }
+    val fullTextToCopy =
+        remember(
+            mainText,
+            reference,
+            verseContent
+        ) {
+            buildString {
+                append(
+                    mainText
+                )
+//                reference?.let {
+//                    append(
+//                        "\n($it)"
+//                    )
+//                }
+                append(
+                    "\n${verseContent.surahName} - ${verseContent.verseNumber}"
+                )
+            }
+        }
 
     BackHandler(onBack = onDismiss)
 
@@ -1508,13 +1584,17 @@ fun VerseDetailScreen(
             // Animated Content Area
             Box(
                 modifier = Modifier.weight(1f).fillMaxWidth()
-                    .pointerInput(Unit) {
-                        detectHorizontalDragGestures { _, dragAmount ->
-                            if (dragAmount > 50) onNavigatePrevious()
-                            if (dragAmount < -50) onNavigateNext()
-                        }
-                    },
-                contentAlignment = Alignment.Center
+//                    .pointerInput(Unit) {
+//                        detectHorizontalDragGestures { _, dragAmount ->
+//                            if (dragAmount > 50) onNavigatePrevious()
+//                            if (dragAmount < -50) onNavigateNext()
+//                        }
+//                    },
+//                contentAlignment = Alignment.Center
+                    .swipeToNavigate(
+                        onSwipeLeft = onNavigateNext,
+                        onSwipeRight = onNavigatePrevious
+                    )
             ) {
                 AnimatedContent(
                     targetState = currentIndex,
@@ -1523,6 +1603,21 @@ fun VerseDetailScreen(
                         slideInHorizontally(animationSpec = tween(30)) { it * direction } + fadeIn() togetherWith
                                 slideOutHorizontally(animationSpec = tween(30)) { -it * direction } + fadeOut() using
                                 SizeTransform(clip = false)
+//                        val direction = if (targetState > initialState) 1 else -1
+//                        val animSpec = tween<IntOffset>(
+//                                durationMillis = 300
+//                            )
+//                        (slideInHorizontally(
+//                            animSpec
+//                        ) { it * direction } +
+//                                fadeIn()) togetherWith
+//                                (slideOutHorizontally(
+//                                    animSpec
+//                                ) { -it * direction } +
+//                                        fadeOut()) using
+//                                SizeTransform(
+//                                    clip = false
+//                                )
                     },
                     label = "VerseContentAnimation"
                 ) {
@@ -1565,7 +1660,7 @@ fun VerseDetailScreen(
 
             // Bottom Navigation Buttons
             Row(
-                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                Modifier.fillMaxWidth().padding(vertical = 8.dp).padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilledTonalButton(
@@ -1590,6 +1685,92 @@ fun VerseDetailScreen(
         }
     }
 }
+
+fun Modifier.swipeToNavigate(
+    onSwipeLeft: (() -> Unit)? = null,
+    onSwipeRight: (() -> Unit)? = null,
+    swipeThreshold: Dp = 100.dp,
+    maxSwipeDistance: Dp = 150.dp,
+    sensitivity: Float = 1f
+): Modifier =
+    composed {
+        val swipeThresholdPx =
+            with(
+                LocalDensity.current
+            ) { swipeThreshold.toPx() }
+        val maxSwipeDistancePx =
+            with(
+                LocalDensity.current
+            ) { maxSwipeDistance.toPx() }
+
+        var offsetX by remember {
+            mutableStateOf(
+                0f
+            )
+        }
+        val offsetXState =
+            animateFloatAsState(
+                targetValue = offsetX,
+                label = "swipeOffset"
+            )
+
+        val scale =
+            remember(
+                offsetX
+            ) {
+                val progress =
+                    (1f - abs(
+                        offsetX
+                    ) / maxSwipeDistancePx).coerceIn(
+                        0.9f,
+                        1f
+                    )
+                progress
+            }
+
+        this
+            .offset {
+                IntOffset(
+                    x = offsetXState.value.roundToInt(),
+                    y = 0
+                )
+            }
+            .scale(
+                scale
+            )
+            .pointerInput(
+                Unit
+            ) {
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { change, dragAmount ->
+                        val newOffset =
+                            offsetX + (dragAmount * sensitivity)
+                        offsetX =
+                            newOffset.coerceIn(
+                                -maxSwipeDistancePx,
+                                maxSwipeDistancePx
+                            )
+                        change.consume()
+                    },
+                    onDragEnd = {
+                        val wasSwipedRight =
+                            offsetX > swipeThresholdPx
+                        val wasSwipedLeft =
+                            offsetX < -swipeThresholdPx
+
+                        when {
+                            wasSwipedRight -> onSwipeRight?.invoke()
+                            wasSwipedLeft -> onSwipeLeft?.invoke()
+                        }
+
+                        // Animate back to center
+                        offsetX =
+                            0f
+                    }
+                )
+            }
+    }
+
 
 
 // --- file: SearchScreen.kt ---
@@ -1628,6 +1809,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -1649,6 +1831,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 @SuppressLint("DiscouragedApi", "InternalInsetResource")
 fun getStatusBarHeight(context: Context): Float {
@@ -1673,38 +1856,28 @@ fun SearchScreen(
     val loadHadiths by viewModel.loadHadiths.collectAsStateWithLifecycle()
     val loadVerses by viewModel.loadVerses.collectAsStateWithLifecycle()
     val bookmarkedIds by viewModel.bookmarkedVerseIds.collectAsStateWithLifecycle()
-
-    var selectedVerse by remember { mutableStateOf<VerseRepository.VerseSearchResult?>(null) }
+    val coroutineScope = rememberCoroutineScope()
     var showFilters by remember { mutableStateOf(false) }
 
-    val currentResults = (uiState as? SearchUiState.Success)?.results ?: emptyList()
+    // This is the list of verses that the detail screen will navigate through.
+    // It can be populated by either the search results or a full surah listing.
+    var detailViewVerseList by remember { mutableStateOf<List<VerseRepository.VerseSearchResult>>(emptyList()) }
+    // This is the specific verse from the list that is currently being displayed.
+    var selectedVerse by remember { mutableStateOf<VerseRepository.VerseSearchResult?>(null) }
 
-    fun navigateToVerse(offset: Int) {
-        val currentIndex = currentResults.indexOf(selectedVerse)
+    // This is the data from the main search query
+    val searchResults = (uiState as? SearchUiState.Success)?.results ?: emptyList()
+
+    fun navigateInDetailView(offset: Int) {
+        if (detailViewVerseList.isEmpty()) return
+        val currentIndex = detailViewVerseList.indexOf(selectedVerse)
         if (currentIndex != -1) {
-            val newIndex = (currentIndex + offset).coerceIn(0, currentResults.lastIndex)
-            selectedVerse = currentResults.getOrNull(newIndex)
+            val newIndex = (currentIndex + offset).coerceIn(0, detailViewVerseList.lastIndex)
+            selectedVerse = detailViewVerseList.getOrNull(newIndex)
         }
     }
-//fun navigateToVerse(offset: Int) {
-//    if (currentResults.isEmpty()) return
-//
-//    val currentIndex = if (selectedVerse != null) {
-//        // Find by ID instead of object reference for more reliable matching
-//        currentResults.indexOfFirst { it.id == selectedVerse?.id }.takeIf { it != -1 } ?: 0
-//    } else {
-//        0
-//    }
-//
-//    val newIndex = (currentIndex + offset).coerceIn(0, currentResults.lastIndex)
-//    if (newIndex in currentResults.indices) {
-//        selectedVerse = currentResults[newIndex]
-//    }
-//}
 
-    val context = LocalContext.current
-
-    BackHandler(true, onBack = { showFilters = false } )
+    BackHandler(enabled = showFilters, onBack = { showFilters = false } )
 
     Scaffold(
         topBar = {
@@ -1736,6 +1909,16 @@ fun SearchScreen(
                         verseSurahNames = viewModel.verseSurahNames,
                         selectedSurahs = surahFilters,
                         onFilterChanged = viewModel::onSurahFilterChange,
+                        onSurahLongPress = { surahName ->
+                            coroutineScope.launch {
+                                val verses = viewModel.getVersesForSurah(surahName)
+                                if (verses.isNotEmpty()) {
+                                    detailViewVerseList = verses
+                                    selectedVerse = verses.first()
+                                    showFilters = false // Close filter panel after selection
+                                }
+                            }
+                        },
                         loadHadiths = loadHadiths,
                         loadVerses = loadVerses
                     )
@@ -1747,7 +1930,10 @@ fun SearchScreen(
             ResultContent(
                 uiState = uiState,
                 bookmarkedIds = bookmarkedIds,
-                onVerseClick = { result -> selectedVerse = result },
+                onVerseClick = { result ->
+                    detailViewVerseList = searchResults
+                    selectedVerse = result
+                },
                 onToggleBookmark = viewModel::toggleBookmark,
                 onLoadMore = viewModel::onLoadMore
             )
@@ -1761,17 +1947,16 @@ fun SearchScreen(
         exit = fadeOut(animationSpec = tween(300))
     ) {
         selectedVerse?.let { verse ->
-            val currentIndex = currentResults.indexOf(verse)
-            //val currentIndex = currentResults.indexOfFirst { it.id == verse.id }.takeIf { it != -1 } ?: 0
+            val currentIndex = detailViewVerseList.indexOfFirst { it.id == verse.id }
             if (currentIndex != -1) {
                 VerseDetailScreen(
                     verseContent = verse.toVerseContent(),
                     currentIndex = currentIndex,
-                    totalCount = currentResults.size,
+                    totalCount = detailViewVerseList.size,
                     isBookmarked = bookmarkedIds.contains(verse.id),
                     onToggleBookmark = { viewModel.toggleBookmark(verse) },
-                    onNavigatePrevious = { navigateToVerse(-1) },
-                    onNavigateNext = { navigateToVerse(1) },
+                    onNavigatePrevious = { navigateInDetailView(-1) },
+                    onNavigateNext = { navigateInDetailView(1) },
                     onDismiss = { selectedVerse = null }
                 )
             }
@@ -1857,5 +2042,4 @@ private fun ResultContent(
         }
     }
 }
-
 

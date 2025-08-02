@@ -106,7 +106,7 @@ fun SearchScreen(
     Scaffold(
         topBar = {
             Column {
-                Spacer(Modifier.height(30.dp))
+                //Spacer(Modifier.height(30.dp))
                 SearchBar(
                     query = searchQuery,
                     onQueryChange = viewModel::onQueryChange,

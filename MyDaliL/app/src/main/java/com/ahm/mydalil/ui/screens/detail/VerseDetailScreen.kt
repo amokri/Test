@@ -240,7 +240,7 @@ fun VerseDetailScreen(
 
             // Bottom Navigation Buttons
             Row(
-                Modifier.fillMaxWidth().padding(vertical = 8.dp).padding(bottom = 16.dp),
+                Modifier.fillMaxWidth(),//.padding(vertical = 8.dp),//.padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilledTonalButton(

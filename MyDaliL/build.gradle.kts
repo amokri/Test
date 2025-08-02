@@ -1,7 +1,14 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 plugins {
+    // These plugins are declared here but not applied.
+    // The 'apply false' makes them available to sub-modules like :app
     alias(libs.plugins.android.application) apply false
-    alias(libs.plugins.kotlin.android) version "1.9.23" apply false
-    id("com.google.devtools.ksp") version "1.9.23-1.0.19" apply false
-    id("com.google.dagger.hilt.android") version "2.50" apply false
+    alias(libs.plugins.jetbrains.kotlin.android) apply false
+    alias(libs.plugins.hilt) apply false
+    alias(libs.plugins.ksp) apply false
+}
+
+// Add a 'clean' task to the root project to delete the build directory.
+task("clean", Delete::class) {
+    delete(layout.buildDirectory) // <-- Modern, configuration-cache-friendly way
 }

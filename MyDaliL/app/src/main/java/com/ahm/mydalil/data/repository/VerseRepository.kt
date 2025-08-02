@@ -8,7 +8,7 @@ import com.ahm.mydalil.data.local.room.toBookmark
 import com.ahm.mydalil.data.model.Surah
 import com.ahm.mydalil.data.model.Verse
 import com.ahm.mydalil.util.Constants
-import com.google.firebase.crashlytics.buildtools.reloc.com.google.common.reflect.TypeToken
+import com.google.gson.reflect.TypeToken
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
