@@ -51,7 +51,7 @@ interface VerseDao {
         surahFilters: Set<String>
     ): Int
 
-    @Query("SELECT DISTINCT surahName FROM verses ORDER BY surahName ASC")
+    @Query("SELECT DISTINCT surahName FROM verses ORDER BY surahNumber ASC")
     fun getAllSurahNames(): Flow<List<String>>
 
     @Query("SELECT DISTINCT surahName FROM verses WHERE source = 'hadith' ORDER BY surahNumber ASC")
