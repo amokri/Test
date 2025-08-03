@@ -29,15 +29,6 @@ fun BookmarkScreen(viewModel: SearchViewModel, onNavigateBack: () -> Unit) {
     val uiState by viewModel.bookmarkUiState.collectAsStateWithLifecycle()
     var selectedBookmark by remember { mutableStateOf<Bookmark?>(null) }
 
-    fun navigateToBookmark(offset: Int) {
-        val bookmarks = uiState.bookmarks
-        val currentIndex = bookmarks.indexOf(selectedBookmark)
-        if (currentIndex != -1) {
-            val newIndex = (currentIndex + offset).coerceIn(0, bookmarks.lastIndex)
-            selectedBookmark = bookmarks.getOrNull(newIndex)
-        }
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -100,22 +91,22 @@ fun BookmarkScreen(viewModel: SearchViewModel, onNavigateBack: () -> Unit) {
 
             if (currentIndex != -1) {
                 VerseDetailScreen(
-                    verseContent = bookmark.toVerseContent(),
-                    currentIndex = currentIndex,
-                    totalCount = bookmarks.size,
-                    isBookmarked = true, // It's always bookmarked here
-                    onToggleBookmark = {
+                    items = bookmarks.map { it.toVerseContent() },
+                    initialIndex = currentIndex,
+                    isBookmarked = { true }, // All items on this screen are bookmarked
+                    onToggleBookmark = { indexToToggle ->
+                        val bookmarkToToggle = bookmarks[indexToToggle]
                         val verseResult = VerseRepository.VerseSearchResult(
-                            verse = com.ahm.mydalil.data.model.Verse(bookmark.verseNumber, bookmark.verseText),
-                            surahName = bookmark.surahName,
-                            surahNumber = bookmark.surahNumber,
-                            source = bookmark.source
+                            verse = com.ahm.mydalil.data.model.Verse(bookmarkToToggle.verseNumber, bookmarkToToggle.verseText),
+                            surahName = bookmarkToToggle.surahName,
+                            surahNumber = bookmarkToToggle.surahNumber,
+                            source = bookmarkToToggle.source
                         )
                         viewModel.toggleBookmark(verseResult)
-                        selectedBookmark = null // Dismiss after removing
+                        // Always dismiss after a toggle action from the bookmark screen for simplicity,
+                        // as the list of items is about to change.
+                        selectedBookmark = null
                     },
-                    onNavigatePrevious = { navigateToBookmark(-1) },
-                    onNavigateNext = { navigateToBookmark(1) },
                     onDismiss = { selectedBookmark = null }
                 )
             }
