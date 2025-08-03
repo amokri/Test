@@ -67,6 +67,8 @@ package com.ahm.mydalil.di
 import android.content.Context
 import com.ahm.mydalil.data.local.datastore.UserPreferences
 import com.ahm.mydalil.data.local.room.AppDatabase
+import com.ahm.mydalil.data.local.room.BookmarkDao
+import com.ahm.mydalil.data.local.room.VerseDao
 import com.ahm.mydalil.data.repository.VerseRepository
 import dagger.Module
 import dagger.Provides
@@ -87,6 +89,18 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideVerseDao(db: AppDatabase): VerseDao {
+        return db.verseDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideBookmarkDao(db: AppDatabase): BookmarkDao {
+        return db.bookmarkDao()
+    }
+
+    @Provides
+    @Singleton
     fun provideUserPreferences(@ApplicationContext context: Context): UserPreferences {
         return UserPreferences(context)
     }
@@ -94,11 +108,10 @@ object AppModule {
     @Provides
     @Singleton
     fun provideVerseRepository(
-        @ApplicationContext context: Context,
-        db: AppDatabase
+        verseDao: VerseDao,
+        bookmarkDao: BookmarkDao
     ): VerseRepository {
-        // The getInstance method already handles the logic, we just use it here
-        return VerseRepository.getInstance(context)
+        return VerseRepository(verseDao, bookmarkDao)
     }
 }
 
@@ -183,71 +196,43 @@ data class Verse(
 // --- file: VerseRepository.kt ---
 package com.ahm.mydalil.data.repository
 
-import android.content.Context
-import android.util.Log
-import com.ahm.mydalil.data.local.room.AppDatabase
 import com.ahm.mydalil.data.local.room.Bookmark
+import com.ahm.mydalil.data.local.room.BookmarkDao
+import com.ahm.mydalil.data.local.room.VerseDao
+import com.ahm.mydalil.data.local.room.VerseEntity
 import com.ahm.mydalil.data.local.room.toBookmark
-import com.ahm.mydalil.data.model.Surah
 import com.ahm.mydalil.data.model.Verse
-import com.ahm.mydalil.util.Constants
-import com.google.gson.reflect.TypeToken
-import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
-import java.io.IOException
+import javax.inject.Inject
+import javax.inject.Singleton
 
-class VerseRepository private constructor(
-    private val context: Context,
-    private val db: AppDatabase
+@Singleton
+class VerseRepository @Inject constructor(
+    private val verseDao: VerseDao,
+    private val bookmarkDao: BookmarkDao
 ) {
-    private val gson = Gson()
-    private val surahListType = object : TypeToken<List<Surah>>() {}.type
 
-    // Data is loaded once and stored, improving performance significantly.
-    private val hadithData: List<Surah> by lazy { loadDataFromFile(Constants.HADITHS_DB_FILE) }
-    private val verseData: List<Surah> by lazy { loadDataFromFile(Constants.VERSES_DB_FILE) }
+    // --- Data Flows from Database ---
+    val allSurahNames: Flow<List<String>> = verseDao.getAllSurahNames()
+    val hadithSurahNames: Flow<List<String>> = verseDao.getHadithSurahNames()
+    val verseSurahNames: Flow<List<String>> = verseDao.getVerseSurahNames()
 
-    //    val allSurahNames: List<String> by lazy {
-//        (hadithData.map { it.surahName } + verseData.map { it.surahName }).distinct().sorted()
-//    }
-    val allSurahNames: List<String> by lazy {
-        (hadithData + verseData)
-            .distinctBy { it.surahName }
-            .sortedBy { it.surahNumber }
-            .map { it.surahName }
-    }
-
-    val hadithSurahNames: Set<String> by lazy { hadithData.map { it.surahName }.toSet() }
-    val verseSurahNames: Set<String> by lazy { verseData.map { it.surahName }.toSet() }
-
-    private fun loadDataFromFile(fileName: String): List<Surah> {
-        return try {
-            context.assets.open(fileName).bufferedReader().use { reader ->
-                gson.fromJson(reader, surahListType) ?: emptyList()
-            }
-        } catch (e: IOException) {
-            Log.e("VerseRepository", "Error reading data from assets: $fileName", e)
-            emptyList()
-        } catch (e: Exception) {
-            Log.e("VerseRepository", "Error parsing data: $fileName", e)
-            emptyList()
-        }
-    }
-
+    // --- Search Result Data Classes ---
     data class PagedResults(
         val items: List<VerseSearchResult>,
         val totalCount: Int,
         val hasNextPage: Boolean
     )
 
-    data class VerseSearchResult(val verse: Verse, val surahName: String, val surahNumber: Int) {
+    data class VerseSearchResult(val verse: Verse, val surahName: String, val surahNumber: Int, val source: String) {
         /** Provides a stable, unique ID for a search result, used for keys and bookmarks. */
-        val id: Int get() = "$surahNumber.${verse.verseNumber} $surahName".hashCode()
+        val id: Int get() = "$source-$surahNumber.${verse.verseNumber} $surahName".hashCode()
     }
 
+    // --- Search Functionality ---
     suspend fun search(
         query: String,
         surahFilters: Set<String>,
@@ -257,101 +242,86 @@ class VerseRepository private constructor(
         loadHadiths: Boolean,
         loadVerses: Boolean
     ): PagedResults = withContext(Dispatchers.IO) {
-        val searchTerms = query.split(Regex("\\s+")).filter { it.isNotBlank() }.map { it.lowercase() }
 
-        val activeData = when {
-            loadHadiths && loadVerses -> hadithData + verseData
-            loadHadiths -> hadithData
-            loadVerses -> verseData
-            else -> emptyList()
+        val sources = mutableListOf<String>().apply {
+            if (loadHadiths) add("hadith")
+            if (loadVerses) add("verse")
         }
 
-        val filteredSurahs = if (surahFilters.isNotEmpty()) {
-            activeData.filter { surah -> surahFilters.contains(surah.surahName) }
+        val ftsQuery = if (query.isBlank()) {
+            "*" // FTS query to match everything when the search bar is empty
         } else {
-            activeData
-        }
+            // Sanitize query to prevent FTS errors and prepare for term processing
+            val sanitizedQuery = query.replace(Regex("[^\\p{L}\\p{N}\\s*]"), " ").trim()
+            val terms = sanitizedQuery.split(Regex("\\s+")).filter { it.isNotBlank() }
 
-        if (searchTerms.isEmpty()) {
-            // If query is empty, return all verses from filtered surahs, paginated.
-            val allResults = filteredSurahs.flatMap { surah ->
-                surah.surahVerses.map { verse ->
-                    VerseSearchResult(verse, surah.surahName, surah.surahNumber)
-                }
+            if (terms.isEmpty()) {
+                // Return empty if query contains only special characters
+                return@withContext PagedResults(emptyList(), 0, false)
             }
-            val start = (page * pageSize).coerceAtMost(allResults.size)
-            val end = (start + pageSize).coerceAtMost(allResults.size)
-            return@withContext PagedResults(
-                items = allResults.subList(start, end),
-                totalCount = allResults.size,
-                hasNextPage = end < allResults.size
-            )
+
+            // Use "AND" for "match all words", "OR" for "match any".
+            // Add a wildcard (*) to the last term for prefix matching (e.g., "prop" matches "prophet").
+            val separator = if (allWordsRequired) " AND " else " OR "
+            terms.joinToString(separator) { "$it*" }
         }
 
-        val allResults = mutableListOf<VerseSearchResult>()
-        for (surah in filteredSurahs) {
-            for (verse in surah.surahVerses) {
-                val textToSearch = verse.verseText.lowercase()
-                val found = if (allWordsRequired) {
-                    searchTerms.all { textToSearch.contains(it) }
-                } else {
-                    searchTerms.any { textToSearch.contains(it) }
-                }
+        val offset = page * pageSize
 
-                if (found) {
-                    allResults.add(VerseSearchResult(verse, surah.surahName, surah.surahNumber))
-                }
-            }
-        }
+        val applySourceFilter = sources.isNotEmpty()
+        val applySurahFilter = surahFilters.isNotEmpty()
 
-        val start = (page * pageSize).coerceAtMost(allResults.size)
-        val end = (start + pageSize).coerceAtMost(allResults.size)
+        val results = verseDao.search(
+            ftsQuery = ftsQuery,
+            applySourceFilter = applySourceFilter,
+            sources = if (applySourceFilter) sources else listOf(""), // Pass non-empty list
+            applySurahFilter = applySurahFilter,
+            surahFilters = if (applySurahFilter) surahFilters else setOf(""), // Pass non-empty set
+            pageSize = pageSize,
+            offset = offset
+        )
+
+        val totalCount = verseDao.getSearchTotalCount(
+            ftsQuery = ftsQuery,
+            applySourceFilter = applySourceFilter,
+            sources = if (applySourceFilter) sources else listOf(""),
+            applySurahFilter = applySurahFilter,
+            surahFilters = if (applySurahFilter) surahFilters else setOf("")
+        )
 
         PagedResults(
-            items = allResults.subList(start, end),
-            totalCount = allResults.size,
-            hasNextPage = end < allResults.size
+            items = results.map { it.toVerseSearchResult() },
+            totalCount = totalCount,
+            hasNextPage = (offset + results.size) < totalCount
         )
     }
 
     suspend fun getVersesForSurah(surahName: String): List<VerseSearchResult> = withContext(Dispatchers.IO) {
-        val allData = hadithData + verseData
-        allData
-            .filter { it.surahName.equals(surahName, ignoreCase = true) }
-            .flatMap { surah ->
-                surah.surahVerses.map { verse ->
-                    VerseSearchResult(verse, surah.surahName, surah.surahNumber)
-                }
-            }
+        verseDao.getVersesForSurah(surahName).map { it.toVerseSearchResult() }
     }
 
     // --- Bookmark Functions ---
+    fun getAllBookmarks(): Flow<List<Bookmark>> = bookmarkDao.getAllBookmarks()
 
-    fun getAllBookmarks(): Flow<List<Bookmark>> = db.bookmarkDao().getAllBookmarks()
-
-    fun getBookmarkedIds(): Flow<Set<Int>> = db.bookmarkDao().getAllBookmarkedIds().map { it.toSet() }
+    fun getBookmarkedIds(): Flow<Set<Int>> = bookmarkDao.getAllBookmarkedIds().map { it.toSet() }
 
     suspend fun toggleBookmark(result: VerseSearchResult, query: String) = withContext(Dispatchers.IO) {
-        val existing = db.bookmarkDao().getBookmarkByVerseId(result.id)
+        val existing = bookmarkDao.getBookmarkByVerseId(result.id)
         if (existing != null) {
-            db.bookmarkDao().deleteBookmark(existing)
+            bookmarkDao.deleteBookmark(existing)
         } else {
-            db.bookmarkDao().insertBookmark(result.toBookmark(query))
+            bookmarkDao.insertBookmark(result.toBookmark(query))
         }
     }
 
-    // --- Companion Object for Singleton Pattern ---
-
-    companion object {
-        @Volatile
-        private var INSTANCE: VerseRepository? = null
-
-        fun getInstance(context: Context): VerseRepository {
-            return INSTANCE ?: synchronized(this) {
-                val db = AppDatabase.getDatabase(context)
-                VerseRepository(context.applicationContext, db).also { INSTANCE = it }
-            }
-        }
+    // --- Mapper Function ---
+    private fun VerseEntity.toVerseSearchResult(): VerseSearchResult {
+        return VerseSearchResult(
+            verse = Verse(verseNumber, verseText),
+            surahName = surahName,
+            surahNumber = surahNumber,
+            source = source
+        )
     }
 }
 
@@ -655,10 +625,10 @@ fun FilterPanel(
 }
 
 @Composable
-private fun SourceIndicator(isFromHadith: Boolean, isFromVerse: Boolean) {
+fun SourceIndicator(isFromHadith: Boolean, isFromVerse: Boolean) {
     val hadithColor = Color(0xFF4CAF50)
     val verseColor = Color(0xFF2196F3)
-    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         if (isFromHadith) {
             Box(Modifier.size(8.dp).background(hadithColor, CircleShape))
         }
@@ -685,11 +655,19 @@ fun VerseCard(
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                Text(
-                    "${result.surahNumber}.${result.verse.verseNumber} ${result.surahName}",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Text(
+                        "${result.surahNumber}.${result.verse.verseNumber} ${result.surahName}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                    SourceIndicator(
+                        isFromHadith = result.source == "hadith",
+                        isFromVerse = result.source == "verse"
+                    )
+                }
+
                 IconButton(onClick = onToggleBookmark, modifier = Modifier.size(24.dp)) {
                     Icon(
                         imageVector = if (isBookmarked) Icons.Filled.Star else Icons.Outlined.Star,
@@ -717,26 +695,23 @@ fun HighlightedText(text: String, keywords: List<String>, style: TextStyle) {
     }
 
     val pattern = remember(keywords) {
-        keywords.filter { it.isNotBlank() }.joinToString("|") { Regex.escape(it) }.toRegex(RegexOption.IGNORE_CASE)
+        // Sanitize keywords for regex and create a single pattern
+        keywords.filter { it.isNotBlank() }
+            .joinToString("|") { Regex.escape(it.removeSuffix("*")) }
+            .toRegex(RegexOption.IGNORE_CASE)
     }
 
     val annotatedString = buildAnnotatedString {
-        var lastIndex = 0
+        append(text) // Append the full text initially
         pattern.findAll(text).forEach { matchResult ->
-            if (matchResult.range.first > lastIndex) {
-                append(text.substring(lastIndex, matchResult.range.first))
-            }
-            withStyle(style = SpanStyle(
-                background = MaterialTheme.colorScheme.primaryContainer,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
+            addStyle(
+                style = SpanStyle(
+                    background = MaterialTheme.colorScheme.primaryContainer,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                ),
+                start = matchResult.range.first,
+                end = matchResult.range.last + 1
             )
-            ) {
-                append(matchResult.value)
-            }
-            lastIndex = matchResult.range.last + 1
-        }
-        if (lastIndex < text.length) {
-            append(text.substring(lastIndex))
         }
     }
     Text(annotatedString, style = style)
@@ -934,16 +909,15 @@ package com.ahm.mydalil.ui.viewmodel
 
 import android.util.Log
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.ahm.mydalil.data.local.datastore.UserPreferences
 import com.ahm.mydalil.data.local.room.Bookmark
 import com.ahm.mydalil.data.repository.VerseRepository
 import com.ahm.mydalil.util.Constants
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 
 // --- UI State Definitions ---
@@ -998,14 +972,11 @@ class SearchViewModel @Inject constructor(
         loadHadiths,
         loadVerses,
     ) { query, filters, allWords, hadiths, verses ->
-        if (query.isBlank()) null else SearchTrigger(query, SearchParams(filters, allWords, hadiths, verses))
+        // Trigger search even for blank query to show all items
+        SearchTrigger(query, SearchParams(filters, allWords, hadiths, verses))
     }
         .distinctUntilChanged()
         .flatMapLatest { trigger ->
-            if (trigger == null) {
-                return@flatMapLatest flowOf(SearchUiState.EmptyQuery)
-            }
-
             // This inner flow manages pagination for a single search trigger.
             // It's restarted by flatMapLatest whenever the trigger changes.
             page.flatMapConcat { pageNum ->
@@ -1026,7 +997,7 @@ class SearchViewModel @Inject constructor(
                         emit(PageFetchResult.Error(e))
                     }
                 }.onStart { emit(PageFetchResult.Loading) }
-            }.scan(SearchUiState.EmptyQuery as SearchUiState) { currentState, result ->
+            }.scan(if (trigger.query.isBlank()) SearchUiState.EmptyQuery else SearchUiState.Loading) { currentState, result ->
                 when (result) {
                     is PageFetchResult.Loading -> {
                         if (currentState is SearchUiState.Success) {
@@ -1046,7 +1017,7 @@ class SearchViewModel @Inject constructor(
                             newItems // For the first page, replace the list
                         } else {
                             // Append to existing, ensuring no duplicates if flow restarts
-                            currentResults + newItems.filterNot { currentResults.any { old -> old.id == it.id } }
+                            (currentResults + newItems).distinctBy { it.id }
                         }
 
                         SearchUiState.Success(
@@ -1124,24 +1095,13 @@ class SearchViewModel @Inject constructor(
     }
 
     // --- Public read-only values for UI ---
-    val allSurahNames: List<String> = repository.allSurahNames
-    val hadithSurahNames: Set<String> = repository.hadithSurahNames
-    val verseSurahNames: Set<String> = repository.verseSurahNames
+    val allSurahNames: StateFlow<List<String>> = repository.allSurahNames
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val hadithSurahNames: StateFlow<Set<String>> = repository.hadithSurahNames.map { it.toSet() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+    val verseSurahNames: StateFlow<Set<String>> = repository.verseSurahNames.map { it.toSet() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
 }
-
-//class SearchViewModelFactory(
-//    private val repository: VerseRepository,
-//    private val userPreferences: UserPreferences
-//) : ViewModelProvider.Factory
-//{
-//    override fun <T : ViewModel> create(modelClass: Class<T>): T {
-//        if (modelClass.isAssignableFrom(SearchViewModel::class.java)) {
-//            @Suppress("UNCHECKED_CAST")
-//            return SearchViewModel(repository, userPreferences) as T
-//        }
-//        throw IllegalArgumentException("Unknown ViewModel class")
-//    }
-//}
 
 // --- file: UserPreferences.kt ---
 package com.ahm.mydalil.data.local.datastore
@@ -1208,11 +1168,21 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.sqlite.db.SupportSQLiteDatabase
+import com.ahm.mydalil.data.model.Surah
 import com.ahm.mydalil.util.Constants
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import java.io.IOException
 
-@Database(entities = [Bookmark::class], version = 1, exportSchema = false)
+@Database(entities = [Bookmark::class, VerseEntity::class, VerseFtsEntity::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun bookmarkDao(): BookmarkDao
+    abstract fun verseDao(): VerseDao
 
     companion object {
         @Volatile
@@ -1224,14 +1194,90 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     Constants.DATABASE_NAME
-                ).build()
+                )
+                    // We handle migration by destroying and re-creating the database.
+                    // This is fine for a development stage app where data is populated from assets.
+                    .fallbackToDestructiveMigration()
+                    .addCallback(DatabaseCallback(context))
+                    .build()
                 INSTANCE = instance
                 instance
             }
         }
     }
-}
 
+    private class DatabaseCallback(
+        private val context: Context
+    ) : RoomDatabase.Callback() {
+        // Use a custom scope to ensure population continues even if the viewmodel scope is cancelled.
+        private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+        override fun onCreate(db: SupportSQLiteDatabase) {
+            super.onCreate(db)
+            // When the DB is created for the first time, populate it.
+            INSTANCE?.let { database ->
+                applicationScope.launch {
+                    populateDatabase(context, database.verseDao())
+                }
+            }
+        }
+
+        private suspend fun populateDatabase(context: Context, verseDao: VerseDao) {
+            // Check if already populated (e.g., in a race condition).
+            if (verseDao.getVerseCount() > 0) return
+
+            val gson = Gson()
+            val versesToInsert = mutableListOf<VerseEntity>()
+
+            // Load Hadiths
+            val hadithSurahs: List<Surah> = loadDataFromFile(context, gson, Constants.HADITHS_DB_FILE)
+            hadithSurahs.forEach { surah ->
+                surah.surahVerses.forEach { verse ->
+                    versesToInsert.add(
+                        VerseEntity(
+                            source = "hadith",
+                            surahNumber = surah.surahNumber,
+                            surahName = surah.surahName,
+                            verseNumber = verse.verseNumber,
+                            verseText = verse.verseText
+                        )
+                    )
+                }
+            }
+
+            // Load Verses
+            val verseSurahs: List<Surah> = loadDataFromFile(context, gson, Constants.VERSES_DB_FILE)
+            verseSurahs.forEach { surah ->
+                surah.surahVerses.forEach { verse ->
+                    versesToInsert.add(
+                        VerseEntity(
+                            source = "verse",
+                            surahNumber = surah.surahNumber,
+                            surahName = surah.surahName,
+                            verseNumber = verse.verseNumber,
+                            verseText = verse.verseText
+                        )
+                    )
+                }
+            }
+
+            // Insert all collected data in a single transaction.
+            verseDao.insertAll(versesToInsert)
+        }
+
+        private fun loadDataFromFile(context: Context, gson: Gson, fileName: String): List<Surah> {
+            val surahListType = object : TypeToken<List<Surah>>() {}.type
+            return try {
+                context.assets.open(fileName).bufferedReader().use { reader ->
+                    gson.fromJson(reader, surahListType) ?: emptyList()
+                }
+            } catch (e: IOException) {
+                // Log error
+                emptyList()
+            }
+        }
+    }
+}
 
 // --- file: Bookmark.kt ---
 package com.ahm.mydalil.data.local.room
@@ -1245,6 +1291,7 @@ data class Bookmark(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     val verseId: Int, // Unique hashcode of the verse content
+    val source: String, // "hadith" or "verse"
     val surahNumber: Int,
     val surahName: String,
     val verseNumber: Int,
@@ -1259,6 +1306,7 @@ data class Bookmark(
 fun VerseRepository.VerseSearchResult.toBookmark(query: String): Bookmark {
     return Bookmark(
         verseId = this.id,
+        source = this.source,
         surahNumber = this.surahNumber,
         surahName = this.surahName,
         verseNumber = this.verse.verseNumber,
@@ -1266,7 +1314,6 @@ fun VerseRepository.VerseSearchResult.toBookmark(query: String): Bookmark {
         query = query
     )
 }
-
 
 // --- file: BookmarkDao.kt ---
 package com.ahm.mydalil.data.local.room
@@ -1300,23 +1347,36 @@ interface BookmarkDao {
 // --- file: Entities.kt ---
 package com.ahm.mydalil.data.local.room
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Fts4
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "surahs")
-data class SurahEntity(
-    @PrimaryKey val surahNumber: Int,
-    val surahName: String
-)
-
+/**
+ * Represents a single verse or hadith entry in the database.
+ * This is the main content entity.
+ */
 @Entity(tableName = "verses")
-@Fts4
 data class VerseEntity(
     @PrimaryKey(autoGenerate = true)
-    val rowid: Int = 0,
+    val id: Int = 0,
+    val source: String, // "hadith" or "verse"
     val surahNumber: Int,
+    val surahName: String,
     val verseNumber: Int,
+    val verseText: String
+)
+
+/**
+ * FTS5 virtual table for full-text searching on the verseText column.
+ * It's linked to the VerseEntity table for efficient lookups.
+ */
+@Fts4(contentEntity = VerseEntity::class)
+@Entity(tableName = "verses_fts")
+data class VerseFtsEntity(
+    // We only need to specify the column we want to index for FTS.
+    // The name must match the column in the contentEntity.
+    @ColumnInfo(name = "verseText")
     val verseText: String
 )
 
@@ -1328,52 +1388,63 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
-import com.ahm.mydalil.data.repository.VerseRepository
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface VerseDao {
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(verses: List<VerseEntity>)
+
+    @Query("SELECT COUNT(*) FROM verses")
+    suspend fun getVerseCount(): Int
+
     @Transaction
     @Query("""
-        SELECT v.verseNumber, v.verseText, s.surahName, s.surahNumber
-        FROM verses v
-        JOIN surahs s ON v.surahNumber = s.surahNumber
-        WHERE v.rowid IN (
-            SELECT rowid FROM verses
-            WHERE verses MATCH :query
-        )
-        AND (:surahFilters IS NULL OR s.surahName IN (:surahFilters))
+        SELECT v.* FROM verses v
+        JOIN verses_fts ON v.id = verses_fts.rowid
+        WHERE verses_fts MATCH :ftsQuery
+        AND (:applySourceFilter = 0 OR v.source IN (:sources))
+        AND (:applySurahFilter = 0 OR v.surahName IN (:surahFilters))
+        ORDER BY v.source, v.surahNumber, v.verseNumber
         LIMIT :pageSize OFFSET :offset
     """)
     suspend fun search(
-        query: String,
-        surahFilters: Set<String>?,
+        ftsQuery: String,
+        applySourceFilter: Boolean,
+        sources: List<String>,
+        applySurahFilter: Boolean,
+        surahFilters: Set<String>,
         pageSize: Int,
         offset: Int
-    ): List<VerseRepository.VerseSearchResult>
+    ): List<VerseEntity>
 
     @Query("""
-        SELECT COUNT(*) FROM verses v
-        JOIN surahs s ON v.surahNumber = s.surahNumber
-        WHERE v.rowid IN (
-            SELECT rowid FROM verses
-            WHERE verses MATCH :query
-        )
-        AND (:surahFilters IS NULL OR s.surahName IN (:surahFilters))
+        SELECT count(*) FROM verses v
+        JOIN verses_fts ON v.id = verses_fts.rowid
+        WHERE verses_fts MATCH :ftsQuery
+        AND (:applySourceFilter = 0 OR v.source IN (:sources))
+        AND (:applySurahFilter = 0 OR v.surahName IN (:surahFilters))
     """)
-    suspend fun getSearchTotalCount(query: String, surahFilters: Set<String>?): Int
+    suspend fun getSearchTotalCount(
+        ftsQuery: String,
+        applySourceFilter: Boolean,
+        sources: List<String>,
+        applySurahFilter: Boolean,
+        surahFilters: Set<String>
+    ): Int
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertSurahs(surahs: List<SurahEntity>)
-
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertVerses(verses: List<VerseEntity>)
-
-    @Query("SELECT COUNT(*) FROM surahs")
-    suspend fun getSurahCount(): Int
-
-    @Query("SELECT surahName FROM surahs ORDER BY surahNumber ASC")
+    @Query("SELECT DISTINCT surahName FROM verses ORDER BY surahNumber ASC")
     fun getAllSurahNames(): Flow<List<String>>
+
+    @Query("SELECT DISTINCT surahName FROM verses WHERE source = 'hadith' ORDER BY surahNumber ASC")
+    fun getHadithSurahNames(): Flow<List<String>>
+
+    @Query("SELECT DISTINCT surahName FROM verses WHERE source = 'verse' ORDER BY surahNumber ASC")
+    fun getVerseSurahNames(): Flow<List<String>>
+
+    @Query("SELECT * FROM verses WHERE surahName = :surahName ORDER BY verseNumber ASC")
+    suspend fun getVersesForSurah(surahName: String): List<VerseEntity>
 }
 
 // --- file: BookmarkScreen.kt ---
@@ -1407,15 +1478,6 @@ import com.ahm.mydalil.ui.viewmodel.SearchViewModel
 fun BookmarkScreen(viewModel: SearchViewModel, onNavigateBack: () -> Unit) {
     val uiState by viewModel.bookmarkUiState.collectAsStateWithLifecycle()
     var selectedBookmark by remember { mutableStateOf<Bookmark?>(null) }
-
-    fun navigateToBookmark(offset: Int) {
-        val bookmarks = uiState.bookmarks
-        val currentIndex = bookmarks.indexOf(selectedBookmark)
-        if (currentIndex != -1) {
-            val newIndex = (currentIndex + offset).coerceIn(0, bookmarks.lastIndex)
-            selectedBookmark = bookmarks.getOrNull(newIndex)
-        }
-    }
 
     Scaffold(
         topBar = {
@@ -1455,7 +1517,8 @@ fun BookmarkScreen(viewModel: SearchViewModel, onNavigateBack: () -> Unit) {
                                 val verseResult = VerseRepository.VerseSearchResult(
                                     verse = com.ahm.mydalil.data.model.Verse(bm.verseNumber, bm.verseText),
                                     surahName = bm.surahName,
-                                    surahNumber = bm.surahNumber
+                                    surahNumber = bm.surahNumber,
+                                    source = bm.source
                                 )
                                 viewModel.toggleBookmark(verseResult)
                             }
@@ -1478,21 +1541,22 @@ fun BookmarkScreen(viewModel: SearchViewModel, onNavigateBack: () -> Unit) {
 
             if (currentIndex != -1) {
                 VerseDetailScreen(
-                    verseContent = bookmark.toVerseContent(),
-                    currentIndex = currentIndex,
-                    totalCount = bookmarks.size,
-                    isBookmarked = true, // It's always bookmarked here
-                    onToggleBookmark = {
+                    items = bookmarks.map { it.toVerseContent() },
+                    initialIndex = currentIndex,
+                    isBookmarked = { true }, // All items on this screen are bookmarked
+                    onToggleBookmark = { indexToToggle ->
+                        val bookmarkToToggle = bookmarks[indexToToggle]
                         val verseResult = VerseRepository.VerseSearchResult(
-                            verse = com.ahm.mydalil.data.model.Verse(bookmark.verseNumber, bookmark.verseText),
-                            surahName = bookmark.surahName,
-                            surahNumber = bookmark.surahNumber
+                            verse = com.ahm.mydalil.data.model.Verse(bookmarkToToggle.verseNumber, bookmarkToToggle.verseText),
+                            surahName = bookmarkToToggle.surahName,
+                            surahNumber = bookmarkToToggle.surahNumber,
+                            source = bookmarkToToggle.source
                         )
                         viewModel.toggleBookmark(verseResult)
-                        selectedBookmark = null // Dismiss after removing
+                        // Always dismiss after a toggle action from the bookmark screen for simplicity,
+                        // as the list of items is about to change.
+                        selectedBookmark = null
                     },
-                    onNavigatePrevious = { navigateToBookmark(-1) },
-                    onNavigateNext = { navigateToBookmark(1) },
                     onDismiss = { selectedBookmark = null }
                 )
             }
@@ -1515,11 +1579,18 @@ private fun BookmarkItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "${bookmark.surahNumber}.${bookmark.verseNumber} ${bookmark.surahName}",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "${bookmark.surahNumber}.${bookmark.verseNumber} ${bookmark.surahName}",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                    SourceIndicator(
+                        isFromHadith = bookmark.source == "hadith",
+                        isFromVerse = bookmark.source == "verse"
+                    )
+                }
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = bookmark.verseText.take(120) + if (bookmark.verseText.length > 120) "..." else "",
@@ -1546,33 +1617,25 @@ private fun BookmarkItem(
     }
 }
 
-
 // --- file: VerseDetailScreen.kt ---
 package com.ahm.mydalil.ui.screens.detail
 
-import android.annotation.SuppressLint
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.ExperimentalAnimationApi
-import androidx.compose.animation.SizeTransform
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -1592,89 +1655,37 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ahm.mydalil.ui.components.VerseContent
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.composed
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.dp
-import kotlin.math.abs
-import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
-@SuppressLint(
-    "UnusedContentLambdaTargetStateParameter"
-)
-@OptIn(ExperimentalAnimationApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun VerseDetailScreen(
-    verseContent: VerseContent,
-    currentIndex: Int,
-    totalCount: Int,
-    isBookmarked: Boolean,
-    onToggleBookmark: () -> Unit,
-    onNavigatePrevious: () -> Unit,
-    onNavigateNext: () -> Unit,
+    items: List<VerseContent>,
+    initialIndex: Int,
+    isBookmarked: (index: Int) -> Boolean,
+    onToggleBookmark: (index: Int) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val pagerState = rememberPagerState(
+        initialPage = initialIndex,
+        pageCount = { items.size }
+    )
+    val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
-//    val fullTextToCopy = remember(verseContent) {
-//        "${verseContent.verseText}\n\n${verseContent.surahName} - ${verseContent.verseNumber}"
-//    }
-    val (mainText, reference) =
-        remember(
-            verseContent.verseText
-        ) {
-            verseContent.verseText.split(
-                "(HR.",
-                limit = 2
-            )
-                .let { parts ->
-                    if (parts.size > 1) parts[0].trim() to "(HR.${parts[1].trim()}"
-                    else parts[0].trim() to null
-                }
-        }
-    val fullTextToCopy =
-        remember(
-            mainText,
-            reference,
-            verseContent
-        ) {
-            buildString {
-                append(
-                    mainText
-                )
-//                reference?.let {
-//                    append(
-//                        "\n($it)"
-//                    )
-//                }
-                append(
-                    "\n${verseContent.surahName} - ${verseContent.verseNumber}"
-                )
-            }
-        }
+
+    // This will react to page changes and provide the current item's data to the controls
+    val currentPage = pagerState.currentPage
+    val currentVerseContent = items.getOrNull(currentPage)
 
     BackHandler(onBack = onDismiss)
 
@@ -1682,6 +1693,24 @@ fun VerseDetailScreen(
         modifier = Modifier.fillMaxSize().clickable(enabled = false, onClick = {}), // Consume clicks
         color = MaterialTheme.colorScheme.surface
     ) {
+        if (currentVerseContent == null) {
+            // Handle case where list is empty or index is out of bounds.
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("Content not available.")
+                IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopStart)) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                }
+            }
+            return@Surface
+        }
+
+        val fullTextToCopy = remember(currentVerseContent) {
+            buildString {
+                append(currentVerseContent.verseText)
+                append("\n\n${currentVerseContent.surahName} - ${currentVerseContent.verseNumber}")
+            }
+        }
+
         Column(Modifier.fillMaxSize().padding(16.dp)) {
             // Top Control Bar
             Row(
@@ -1693,7 +1722,7 @@ fun VerseDetailScreen(
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                 }
                 Text(
-                    "${currentIndex + 1} of $totalCount",
+                    text = if (pagerState.pageCount > 0) "${currentPage + 1} of ${pagerState.pageCount}" else "",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Row {
@@ -1703,107 +1732,38 @@ fun VerseDetailScreen(
                     }) {
                         Icon(Icons.Default.Share, "Share")
                     }
-                    IconButton(onClick = onToggleBookmark) {
+                    IconButton(onClick = { onToggleBookmark(currentPage) }) {
+                        val bookmarked = isBookmarked(currentPage)
                         Icon(
-                            imageVector = if (isBookmarked) Icons.Filled.Star else Icons.Outlined.Star,
-                            contentDescription = if (isBookmarked) "Remove bookmark" else "Add bookmark",
-                            tint = if (isBookmarked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            imageVector = if (bookmarked) Icons.Filled.Star else Icons.Outlined.Star,
+                            contentDescription = if (bookmarked) "Remove bookmark" else "Add bookmark",
+                            tint = if (bookmarked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
             }
 
-            // Animated Content Area
-            Box(
-                modifier = Modifier.weight(1f).fillMaxWidth()
-//                    .pointerInput(Unit) {
-//                        detectHorizontalDragGestures { _, dragAmount ->
-//                            if (dragAmount > 50) onNavigatePrevious()
-//                            if (dragAmount < -50) onNavigateNext()
-//                        }
-//                    },
-//                contentAlignment = Alignment.Center
-                    .swipeToNavigate(
-                        onSwipeLeft = onNavigateNext,
-                        onSwipeRight = onNavigatePrevious
-                    )
-            ) {
-                AnimatedContent(
-                    targetState = currentIndex,
-                    transitionSpec = {
-                        val direction = if (targetState > initialState) 1 else -1
-                        slideInHorizontally(animationSpec = tween(30)) { it * direction } + fadeIn() togetherWith
-                                slideOutHorizontally(animationSpec = tween(30)) { -it * direction } + fadeOut() using
-                                SizeTransform(clip = false)
-//                        val direction = if (targetState > initialState) 1 else -1
-//                        val animSpec = tween<IntOffset>(
-//                                durationMillis = 300
-//                            )
-//                        (slideInHorizontally(
-//                            animSpec
-//                        ) { it * direction } +
-//                                fadeIn()) togetherWith
-//                                (slideOutHorizontally(
-//                                    animSpec
-//                                ) { -it * direction } +
-//                                        fadeOut()) using
-//                                SizeTransform(
-//                                    clip = false
-//                                )
-                    },
-                    label = "VerseContentAnimation"
-                ) {
-//                val pagerState = rememberPagerState(
-//                    initialPage = currentIndex,
-//                    pageCount = { totalCount }
-//                )
-//
-//                HorizontalPager(state = pagerState) { pageIndex ->
-                    Column(
-                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        SelectionContainer {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    verseContent.verseText,
-                                    style = MaterialTheme.typography.headlineSmall,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(vertical = 16.dp)
-                                )
-                                Text(
-                                    "${verseContent.surahName} - ${verseContent.verseNumber}",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(bottom = 16.dp)
-                                )
-                                if (verseContent.extraInfo.isNotBlank()) {
-                                    Card(
-                                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                                    ) {
-                                        Text(
-                                            verseContent.extraInfo,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            modifier = Modifier.padding(16.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            // Pager Content Area
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(0.dp),
+                key = { page -> items[page].hashCode() } // Use a stable key if available
+            ) { pageIndex ->
+                VersePageContent(items[pageIndex])
             }
+
 
             // Bottom Navigation Buttons
             Row(
-                Modifier.fillMaxWidth(),//.padding(vertical = 8.dp),//.padding(bottom = 16.dp),
+                Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilledTonalButton(
-                    onClick = onNavigatePrevious,
-                    enabled = currentIndex > 0,
+                    onClick = {
+                        coroutineScope.launch { pagerState.animateScrollToPage(currentPage - 1) }
+                    },
+                    enabled = currentPage > 0,
                     modifier = Modifier.weight(1f)
                 ) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, "Previous")
@@ -1811,8 +1771,10 @@ fun VerseDetailScreen(
                     Text("Previous")
                 }
                 FilledTonalButton(
-                    onClick = onNavigateNext,
-                    enabled = currentIndex < totalCount - 1,
+                    onClick = {
+                        coroutineScope.launch { pagerState.animateScrollToPage(currentPage + 1) }
+                    },
+                    enabled = currentPage < pagerState.pageCount - 1,
                     modifier = Modifier.weight(1f)
                 ) {
                     Text("Next")
@@ -1824,92 +1786,43 @@ fun VerseDetailScreen(
     }
 }
 
-fun Modifier.swipeToNavigate(
-    onSwipeLeft: (() -> Unit)? = null,
-    onSwipeRight: (() -> Unit)? = null,
-    swipeThreshold: Dp = 100.dp,
-    maxSwipeDistance: Dp = 150.dp,
-    sensitivity: Float = 1f
-): Modifier =
-    composed {
-        val swipeThresholdPx =
-            with(
-                LocalDensity.current
-            ) { swipeThreshold.toPx() }
-        val maxSwipeDistancePx =
-            with(
-                LocalDensity.current
-            ) { maxSwipeDistance.toPx() }
-
-        var offsetX by remember {
-            mutableStateOf(
-                0f
-            )
-        }
-        val offsetXState =
-            animateFloatAsState(
-                targetValue = offsetX,
-                label = "swipeOffset"
-            )
-
-        val scale =
-            remember(
-                offsetX
-            ) {
-                val progress =
-                    (1f - abs(
-                        offsetX
-                    ) / maxSwipeDistancePx).coerceIn(
-                        0.9f,
-                        1f
-                    )
-                progress
-            }
-
-        this
-            .offset {
-                IntOffset(
-                    x = offsetXState.value.roundToInt(),
-                    y = 0
+@Composable
+private fun VersePageContent(verseContent: VerseContent) {
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        SelectionContainer {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    verseContent.verseText,
+                    style = MaterialTheme.typography.headlineSmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(vertical = 16.dp)
                 )
-            }
-            .scale(
-                scale
-            )
-            .pointerInput(
-                Unit
-            ) {
-                detectHorizontalDragGestures(
-                    onHorizontalDrag = { change, dragAmount ->
-                        val newOffset =
-                            offsetX + (dragAmount * sensitivity)
-                        offsetX =
-                            newOffset.coerceIn(
-                                -maxSwipeDistancePx,
-                                maxSwipeDistancePx
-                            )
-                        change.consume()
-                    },
-                    onDragEnd = {
-                        val wasSwipedRight =
-                            offsetX > swipeThresholdPx
-                        val wasSwipedLeft =
-                            offsetX < -swipeThresholdPx
-
-                        when {
-                            wasSwipedRight -> onSwipeRight?.invoke()
-                            wasSwipedLeft -> onSwipeLeft?.invoke()
-                        }
-
-                        // Animate back to center
-                        offsetX =
-                            0f
+                Text(
+                    "${verseContent.surahName} - ${verseContent.verseNumber}",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+                if (verseContent.extraInfo.isNotBlank()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        Text(
+                            verseContent.extraInfo,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(16.dp)
+                        )
                     }
-                )
+                }
             }
+        }
     }
-
-
+}
 
 // --- file: SearchScreen.kt ---
 package com.ahm.mydalil.ui.screens.search
@@ -1917,7 +1830,6 @@ package com.ahm.mydalil.ui.screens.search
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.Resources
-import android.util.TypedValue
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -1930,10 +1842,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -1953,6 +1863,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ahm.mydalil.data.repository.VerseRepository
@@ -1987,6 +1898,7 @@ fun SearchScreen(
     viewModel: SearchViewModel,
     onNavigateToBookmarks: () -> Unit
 ) {
+    val keyboardController = LocalSoftwareKeyboardController.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val surahFilters by viewModel.surahFilters.collectAsStateWithLifecycle()
@@ -1994,6 +1906,11 @@ fun SearchScreen(
     val loadHadiths by viewModel.loadHadiths.collectAsStateWithLifecycle()
     val loadVerses by viewModel.loadVerses.collectAsStateWithLifecycle()
     val bookmarkedIds by viewModel.bookmarkedVerseIds.collectAsStateWithLifecycle()
+
+    val allSurahNames by viewModel.allSurahNames.collectAsStateWithLifecycle()
+    val hadithSurahNames by viewModel.hadithSurahNames.collectAsStateWithLifecycle()
+    val verseSurahNames by viewModel.verseSurahNames.collectAsStateWithLifecycle()
+
     val coroutineScope = rememberCoroutineScope()
     var showFilters by remember { mutableStateOf(false) }
 
@@ -2006,25 +1923,18 @@ fun SearchScreen(
     // This is the data from the main search query
     val searchResults = (uiState as? SearchUiState.Success)?.results ?: emptyList()
 
-    fun navigateInDetailView(offset: Int) {
-        if (detailViewVerseList.isEmpty()) return
-        val currentIndex = detailViewVerseList.indexOf(selectedVerse)
-        if (currentIndex != -1) {
-            val newIndex = (currentIndex + offset).coerceIn(0, detailViewVerseList.lastIndex)
-            selectedVerse = detailViewVerseList.getOrNull(newIndex)
-        }
-    }
-
     BackHandler(enabled = showFilters, onBack = { showFilters = false } )
 
     Scaffold(
         topBar = {
             Column {
-                //Spacer(Modifier.height(30.dp))
                 SearchBar(
                     query = searchQuery,
                     onQueryChange = viewModel::onQueryChange,
-                    onBookmarkClick = onNavigateToBookmarks,
+                    onBookmarkClick = {
+                        keyboardController?.hide()
+                        onNavigateToBookmarks()
+                    },
                     onFilterClick = { showFilters = !showFilters }
                 )
                 SearchOptions(
@@ -2042,15 +1952,16 @@ fun SearchScreen(
                     exit = shrinkVertically()
                 ) {
                     FilterPanel(
-                        allSurahNames = viewModel.allSurahNames,
-                        hadithSurahNames = viewModel.hadithSurahNames,
-                        verseSurahNames = viewModel.verseSurahNames,
+                        allSurahNames = allSurahNames,
+                        hadithSurahNames = hadithSurahNames,
+                        verseSurahNames = verseSurahNames,
                         selectedSurahs = surahFilters,
                         onFilterChanged = viewModel::onSurahFilterChange,
                         onSurahLongPress = { surahName ->
                             coroutineScope.launch {
                                 val verses = viewModel.getVersesForSurah(surahName)
                                 if (verses.isNotEmpty()) {
+                                    keyboardController?.hide()
                                     detailViewVerseList = verses
                                     selectedVerse = verses.first()
                                     showFilters = false // Close filter panel after selection
@@ -2069,6 +1980,7 @@ fun SearchScreen(
                 uiState = uiState,
                 bookmarkedIds = bookmarkedIds,
                 onVerseClick = { result ->
+                    keyboardController?.hide()
                     detailViewVerseList = searchResults
                     selectedVerse = result
                 },
@@ -2088,13 +2000,10 @@ fun SearchScreen(
             val currentIndex = detailViewVerseList.indexOfFirst { it.id == verse.id }
             if (currentIndex != -1) {
                 VerseDetailScreen(
-                    verseContent = verse.toVerseContent(),
-                    currentIndex = currentIndex,
-                    totalCount = detailViewVerseList.size,
-                    isBookmarked = bookmarkedIds.contains(verse.id),
-                    onToggleBookmark = { viewModel.toggleBookmark(verse) },
-                    onNavigatePrevious = { navigateInDetailView(-1) },
-                    onNavigateNext = { navigateInDetailView(1) },
+                    items = detailViewVerseList.map { it.toVerseContent() },
+                    initialIndex = currentIndex,
+                    isBookmarked = { index -> bookmarkedIds.contains(detailViewVerseList[index].id) },
+                    onToggleBookmark = { index -> viewModel.toggleBookmark(detailViewVerseList[index]) },
                     onDismiss = { selectedVerse = null }
                 )
             }
@@ -2130,7 +2039,7 @@ private fun ResultContent(
                     .collect { onLoadMore() }
             }
 
-            if (uiState.results.isEmpty()) {
+            if (uiState.results.isEmpty() && uiState.query.isNotBlank()) {
                 Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
                     Text("No results found for \"${uiState.query}\"")
                 }
@@ -2141,12 +2050,14 @@ private fun ResultContent(
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    item {
-                        Text(
-                            "${uiState.totalResults} results found",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
+                    if (uiState.results.isNotEmpty()) {
+                        item {
+                            Text(
+                                "${uiState.totalResults} results found",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
                     }
                     items(items = uiState.results, key = { it.id }) { result ->
                         VerseCard(
@@ -2174,9 +2085,16 @@ private fun ResultContent(
             }
         }
         is SearchUiState.EmptyQuery -> {
-            Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
-                Text("Enter a query to start searching.", style = MaterialTheme.typography.bodyLarge)
-            }
+            // This state is now used when the query is blank. We can show instructions
+            // or a subset of data. Currently, the search shows all results.
+            // If you want a message, you can add it here based on the total results.
+            ResultContent( // Recursively call with a Success state to show all items
+                uiState = SearchUiState.Success(emptyList(), 0, canLoadMore = true, isLoadingMore = false, query = ""),
+                bookmarkedIds = bookmarkedIds,
+                onVerseClick = onVerseClick,
+                onToggleBookmark = onToggleBookmark,
+                onLoadMore = onLoadMore
+            )
         }
     }
 }
