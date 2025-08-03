@@ -3,7 +3,6 @@ package com.ahm.mydalil.ui.screens.search
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.Resources
-import android.util.TypedValue
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -16,10 +15,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -97,15 +94,6 @@ fun SearchScreen(
     // This is the data from the main search query
     val searchResults = (uiState as? SearchUiState.Success)?.results ?: emptyList()
 
-    fun navigateInDetailView(offset: Int) {
-        if (detailViewVerseList.isEmpty()) return
-        val currentIndex = detailViewVerseList.indexOf(selectedVerse)
-        if (currentIndex != -1) {
-            val newIndex = (currentIndex + offset).coerceIn(0, detailViewVerseList.lastIndex)
-            selectedVerse = detailViewVerseList.getOrNull(newIndex)
-        }
-    }
-
     BackHandler(enabled = showFilters, onBack = { showFilters = false } )
 
     Scaffold(
@@ -179,13 +167,10 @@ fun SearchScreen(
             val currentIndex = detailViewVerseList.indexOfFirst { it.id == verse.id }
             if (currentIndex != -1) {
                 VerseDetailScreen(
-                    verseContent = verse.toVerseContent(),
-                    currentIndex = currentIndex,
-                    totalCount = detailViewVerseList.size,
-                    isBookmarked = bookmarkedIds.contains(verse.id),
-                    onToggleBookmark = { viewModel.toggleBookmark(verse) },
-                    onNavigatePrevious = { navigateInDetailView(-1) },
-                    onNavigateNext = { navigateInDetailView(1) },
+                    items = detailViewVerseList.map { it.toVerseContent() },
+                    initialIndex = currentIndex,
+                    isBookmarked = { index -> bookmarkedIds.contains(detailViewVerseList[index].id) },
+                    onToggleBookmark = { index -> viewModel.toggleBookmark(detailViewVerseList[index]) },
                     onDismiss = { selectedVerse = null }
                 )
             }
