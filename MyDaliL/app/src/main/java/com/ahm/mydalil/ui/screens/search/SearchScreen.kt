@@ -30,7 +30,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -53,7 +52,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
 
 @SuppressLint("DiscouragedApi", "InternalInsetResource")
 fun getStatusBarHeight(context: Context): Float {
@@ -84,7 +82,6 @@ fun SearchScreen(
     val hadithSurahNames by viewModel.hadithSurahNames.collectAsStateWithLifecycle()
     val verseSurahNames by viewModel.verseSurahNames.collectAsStateWithLifecycle()
 
-    val coroutineScope = rememberCoroutineScope()
     var showFilters by remember { mutableStateOf(false) }
 
     // This is the list of verses that the detail screen will navigate through.
@@ -93,7 +90,7 @@ fun SearchScreen(
     // This is the specific verse from the list that is currently being displayed.
     var selectedVerse by remember { mutableStateOf<VerseRepository.VerseSearchResult?>(null) }
 
-    // This is the data from the main search query
+    // This is the data from the main search query OR the surah display.
     val searchResults = (uiState as? SearchUiState.Success)?.results ?: emptyList()
 
     BackHandler(enabled = showFilters, onBack = { showFilters = false } )
@@ -131,15 +128,9 @@ fun SearchScreen(
                         selectedSurahs = surahFilters,
                         onFilterChanged = viewModel::onSurahFilterChange,
                         onSurahLongPress = { surahName ->
-                            coroutineScope.launch {
-                                val verses = viewModel.getVersesForSurah(surahName)
-                                if (verses.isNotEmpty()) {
-                                    keyboardController?.hide()
-                                    detailViewVerseList = verses
-                                    selectedVerse = verses.first()
-                                    showFilters = false // Close filter panel after selection
-                                }
-                            }
+                            viewModel.onDisplaySurah(surahName)
+                            keyboardController?.hide()
+                            showFilters = false // Close filter panel after selection
                         },
                         loadHadiths = loadHadiths,
                         loadVerses = loadVerses
@@ -203,7 +194,9 @@ private fun ResultContent(
             val listState = rememberLazyListState()
 
             // Pagination trigger
-            LaunchedEffect(listState) {
+            LaunchedEffect(listState, uiState.canLoadMore) {
+                if (!uiState.canLoadMore) return@LaunchedEffect
+
                 snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
                     .filterNotNull()
                     .map { lastIndex -> lastIndex >= uiState.results.size - Constants.PAGINATION_PREFETCH_DISTANCE }
@@ -225,8 +218,14 @@ private fun ResultContent(
                 ) {
                     if (uiState.results.isNotEmpty()) {
                         item {
+                            val resultsText = if (uiState.query.isBlank() && uiState.results.isNotEmpty() && !uiState.canLoadMore) {
+                                // This is likely a surah display (no query, not paginated)
+                                "${uiState.totalResults} verses"
+                            } else {
+                                "${uiState.totalResults} results found"
+                            }
                             Text(
-                                "${uiState.totalResults} results found",
+                                text = resultsText,
                                 style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
