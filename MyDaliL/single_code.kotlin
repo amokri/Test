@@ -1,4 +1,160 @@
-// --- file: MainActivity.kt ---
+// --- file: build.gradle.kts ---
+plugins {
+    alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.jetbrains.kotlin.android) apply false
+    alias(libs.plugins.hilt) apply false
+    alias(libs.plugins.ksp) apply false
+}
+
+task("clean", Delete::class) {
+    delete(layout.buildDirectory)
+}
+
+// --- file: settings.gradle.kts ---
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "MyDalil"
+include(":app")
+
+// --- file: app\build.gradle.kts ---
+import org.gradle.kotlin.dsl.implementation
+
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.jetbrains.kotlin.android)
+    alias(libs.plugins.hilt)
+    alias(libs.plugins.ksp)
+}
+
+android {
+    namespace = "com.ahm.mydalil"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.ahm.mydalil"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        vectorDrawables {
+            useSupportLibrary = true
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+    buildFeatures {
+        compose = true
+    }
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.10"
+    }
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+}
+
+dependencies {
+    // AndroidX Core & Activity
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.activity.compose)
+
+    // AndroidX Lifecycle (ViewModel, LiveData, observing state in Compose)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
+
+    // Jetpack Compose (using the BOM)
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.compose.animation)
+    implementation(libs.androidx.compose.foundation)
+
+    // Hilt for Dependency Injection
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
+
+    // Room for Local Database
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx) // For Coroutines support
+    ksp(libs.androidx.room.compiler)
+
+    // DataStore for Preferences
+    implementation(libs.androidx.datastore.preferences)
+
+    // Gson for JSON parsing
+    implementation(libs.gson)
+
+    // --- Test Dependencies ---
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.espresso.core)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+
+    // --- Debug Dependencies ---
+    debugImplementation(libs.androidx.compose.ui.tooling)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
+
+    // Swipe
+    //implementation("androidx.compose.foundation:foundation:1.7.0-beta02")
+    implementation(libs.androidx.compose.foundation)
+
+    // Windows size
+    implementation("androidx.compose.material3:material3-window-size-class")
+
+    implementation("androidx.room:room-runtime:2.6.1")
+    ksp("androidx.room:room-compiler:2.6.1")
+
+    val room_version = "2.6.1"
+
+    implementation("androidx.room:room-runtime:$room_version")
+    annotationProcessor("androidx.room:room-compiler:$room_version")
+    // To use Kotlin Symbol Processing (KSP)
+    ksp("androidx.room:room-compiler:$room_version")
+    // optional - Kotlin Extensions and Coroutines support for Room
+    implementation("androidx.room:room-ktx:$room_version")
+    // optional - FTS support
+    implementation("androidx.sqlite:sqlite-ktx:2.4.0")
+}
+
+// --- file: app\src\main\java\com\ahm\mydalil\MainActivity.kt ---
 package com.ahm.mydalil
 
 import android.os.Bundle
@@ -40,7 +196,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// --- file: MyDalilApplication.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\MyDalilApplication.kt ---
 package com.ahm.mydalil
 
 import android.app.Application
@@ -61,7 +217,7 @@ class MyDalilApplication : Application() {
 }
 
 
-// --- file: AppModule.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\di\AppModule.kt ---
 package com.ahm.mydalil.di
 
 import android.content.Context
@@ -115,7 +271,7 @@ object AppModule {
     }
 }
 
-// --- file: Constants.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\util\Constants.kt ---
 package com.ahm.mydalil.util
 
 import android.content.Context
@@ -176,7 +332,7 @@ object Constants {
 }
 
 
-// --- file: ApiModels.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\data\model\ApiModels.kt ---
 package com.ahm.mydalil.data.model
 
 import com.google.gson.annotations.SerializedName
@@ -193,7 +349,7 @@ data class Verse(
 )
 
 
-// --- file: VerseRepository.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\data\repository\VerseRepository.kt ---
 package com.ahm.mydalil.data.repository
 
 import com.ahm.mydalil.data.local.room.Bookmark
@@ -260,10 +416,14 @@ class VerseRepository @Inject constructor(
                 return@withContext PagedResults(emptyList(), 0, false)
             }
 
-            // Use "AND" for "match all words", "OR" for "match any".
-            // Add a wildcard (*) to the last term for prefix matching (e.g., "prop" matches "prophet").
-            val separator = if (allWordsRequired) " AND " else " OR "
-            terms.joinToString(separator) { "$it*" }
+            // For "all words required", FTS uses a space as an implicit AND operator.
+            // For "any word", the OR operator must be explicit.
+            // A wildcard (*) is added to each term for prefix matching.
+            if (allWordsRequired) {
+                terms.joinToString(" ") { "$it*" }
+            } else {
+                terms.joinToString(" OR ") { "$it*" }
+            }
         }
 
         val offset = page * pageSize
@@ -325,7 +485,7 @@ class VerseRepository @Inject constructor(
     }
 }
 
-// --- file: CommonUiComponents.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\ui\components\CommonUiComponents.kt ---
 package com.ahm.mydalil.ui.components
 
 import android.widget.Toast
@@ -748,7 +908,7 @@ fun Bookmark.toVerseContent(): VerseContent = object : VerseContent {
     }
 }
 
-// --- file: AppNavigator.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\ui\navigation\AppNavigator.kt ---
 package com.ahm.mydalil.ui.navigation
 
 import androidx.activity.compose.BackHandler
@@ -783,7 +943,7 @@ fun AppNavigator(viewModel: SearchViewModel) {
 }
 
 
-// --- file: Color.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\ui\theme\Color.kt ---
 package com.ahm.mydalil.ui.theme
 
 import androidx.compose.ui.graphics.Color
@@ -809,7 +969,7 @@ val OnSurfaceDark = Color(0xFFFFFFFF)
 val ErrorColor = Color(0xFFF44336)
 
 
-// --- file: Theme.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\ui\theme\Theme.kt ---
 package com.ahm.mydalil.ui.theme
 
 import android.app.Activity
@@ -870,7 +1030,7 @@ fun MyDalilTheme(
 }
 
 
-// --- file: Type.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\ui\theme\Type.kt ---
 package com.ahm.mydalil.ui.theme
 
 import androidx.compose.material3.Typography
@@ -904,7 +1064,7 @@ val AppTypography = Typography(
 )
 
 
-// --- file: SearchViewModel.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\ui\viewmodel\SearchViewModel.kt ---
 package com.ahm.mydalil.ui.viewmodel
 
 import android.util.Log
@@ -915,6 +1075,7 @@ import com.ahm.mydalil.data.local.room.Bookmark
 import com.ahm.mydalil.data.repository.VerseRepository
 import com.ahm.mydalil.util.Constants
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -948,6 +1109,28 @@ class SearchViewModel @Inject constructor(
 ) : ViewModel()
 {
 
+    // --- Helper classes for reactive stream ---
+    private sealed class DisplayMode {
+        object Search : DisplayMode()
+        data class Surah(val surahName: String) : DisplayMode()
+    }
+
+    private data class SearchParams(
+        val filters: Set<String>,
+        val allWordsRequired: Boolean,
+        val loadHadiths: Boolean,
+        val loadVerses: Boolean
+    )
+
+    private data class FullTrigger(val query: String, val params: SearchParams, val mode: DisplayMode)
+
+    private sealed class PageFetchResult {
+        data object Loading : PageFetchResult()
+        data class Success(val results: VerseRepository.PagedResults, val page: Int) : PageFetchResult()
+        data class Error(val error: Throwable) : PageFetchResult()
+    }
+
+
     // --- Input Flows from UI ---
     val searchQuery = MutableStateFlow("")
     val surahFilters = prefs.selectedSurahs.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
@@ -955,6 +1138,8 @@ class SearchViewModel @Inject constructor(
     val loadHadiths = prefs.loadHadiths.stateIn(viewModelScope, SharingStarted.Eagerly, true)
     val loadVerses = prefs.loadVerses.stateIn(viewModelScope, SharingStarted.Eagerly, true)
     private val page = MutableStateFlow(0)
+    private val displayMode = MutableStateFlow<DisplayMode>(DisplayMode.Search)
+
 
     // --- State for the UI ---
     val bookmarkedVerseIds = repository.getBookmarkedIds()
@@ -964,69 +1149,101 @@ class SearchViewModel @Inject constructor(
         .map { bookmarks -> BookmarkUiState(bookmarks = bookmarks, isLoading = false) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), BookmarkUiState(isLoading = true))
 
-    // The main reactive pipeline that produces the search UI state
-    val uiState: StateFlow<SearchUiState> = combine(
-        searchQuery.debounce(Constants.SEARCH_DEBOUNCE_MS),
+    // First, combine the search parameters into a single flow.
+    private val searchParamsFlow = combine(
         surahFilters,
         allWordsRequired,
         loadHadiths,
         loadVerses,
-    ) { query, filters, allWords, hadiths, verses ->
-        // Trigger search even for blank query to show all items
-        SearchTrigger(query, SearchParams(filters, allWords, hadiths, verses))
+    ) { filters, allWords, hadiths, verses ->
+        SearchParams(filters, allWords, hadiths, verses)
+    }
+
+    // The main reactive pipeline that produces the search UI state
+    @OptIn(
+        ExperimentalCoroutinesApi::class
+    )
+    val uiState: StateFlow<SearchUiState> = combine(
+        searchQuery.debounce(Constants.SEARCH_DEBOUNCE_MS),
+        searchParamsFlow, // Use the combined parameters flow
+        displayMode
+    ) { query, params, mode ->
+        FullTrigger(query, params, mode)
     }
         .distinctUntilChanged()
         .flatMapLatest { trigger ->
-            // This inner flow manages pagination for a single search trigger.
-            // It's restarted by flatMapLatest whenever the trigger changes.
-            page.flatMapConcat { pageNum ->
-                flow<PageFetchResult> {
-                    try {
-                        val results = repository.search(
-                            query = trigger.query,
-                            surahFilters = trigger.params.filters,
-                            allWordsRequired = trigger.params.allWordsRequired,
-                            page = pageNum,
-                            pageSize = Constants.PAGINATION_PAGE_SIZE,
-                            loadHadiths = trigger.params.loadHadiths,
-                            loadVerses = trigger.params.loadVerses
-                        )
-                        emit(PageFetchResult.Success(results, pageNum))
-                    } catch (e: Exception) {
-                        Log.e("SearchViewModel", "Search failed for page $pageNum", e)
-                        emit(PageFetchResult.Error(e))
-                    }
-                }.onStart { emit(PageFetchResult.Loading) }
-            }.scan(if (trigger.query.isBlank()) SearchUiState.EmptyQuery else SearchUiState.Loading) { currentState, result ->
-                when (result) {
-                    is PageFetchResult.Loading -> {
-                        if (currentState is SearchUiState.Success) {
-                            currentState.copy(isLoadingMore = true)
-                        } else {
-                            SearchUiState.Loading
+            when (val mode = trigger.mode) {
+                is DisplayMode.Search -> {
+                    // Standard search logic with pagination
+                    page.flatMapConcat { pageNum ->
+                        flow<PageFetchResult> {
+                            try {
+                                val results = repository.search(
+                                    query = trigger.query,
+                                    surahFilters = trigger.params.filters,
+                                    allWordsRequired = trigger.params.allWordsRequired,
+                                    page = pageNum,
+                                    pageSize = Constants.PAGINATION_PAGE_SIZE,
+                                    loadHadiths = trigger.params.loadHadiths,
+                                    loadVerses = trigger.params.loadVerses
+                                )
+                                emit(PageFetchResult.Success(results, pageNum))
+                            } catch (e: Exception) {
+                                Log.e("SearchViewModel", "Search failed for page $pageNum", e)
+                                emit(PageFetchResult.Error(e))
+                            }
+                        }.onStart { emit(PageFetchResult.Loading) }
+                    }.scan(if (trigger.query.isBlank()) SearchUiState.EmptyQuery else SearchUiState.Loading) { currentState, result ->
+                        when (result) {
+                            is PageFetchResult.Loading -> {
+                                if (currentState is SearchUiState.Success) {
+                                    currentState.copy(isLoadingMore = true)
+                                } else {
+                                    SearchUiState.Loading
+                                }
+                            }
+                            is PageFetchResult.Error -> {
+                                SearchUiState.Error("Search failed: ${result.error.message}")
+                            }
+                            is PageFetchResult.Success -> {
+                                val currentResults = (currentState as? SearchUiState.Success)?.results ?: emptyList()
+                                val newItems = result.results.items
+
+                                val combinedResults = if (result.page == 0) {
+                                    newItems // For the first page, replace the list
+                                } else {
+                                    (currentResults + newItems).distinctBy { it.id }
+                                }
+
+                                SearchUiState.Success(
+                                    results = combinedResults,
+                                    totalResults = result.results.totalCount,
+                                    canLoadMore = result.results.hasNextPage,
+                                    isLoadingMore = false,
+                                    query = trigger.query
+                                )
+                            }
                         }
                     }
-                    is PageFetchResult.Error -> {
-                        SearchUiState.Error("Search failed: ${result.error.message}")
-                    }
-                    is PageFetchResult.Success -> {
-                        val currentResults = (currentState as? SearchUiState.Success)?.results ?: emptyList()
-                        val newItems = result.results.items
-
-                        val combinedResults = if (result.page == 0) {
-                            newItems // For the first page, replace the list
-                        } else {
-                            // Append to existing, ensuring no duplicates if flow restarts
-                            (currentResults + newItems).distinctBy { it.id }
+                }
+                is DisplayMode.Surah -> {
+                    // Logic to display a single surah
+                    flow {
+                        emit(SearchUiState.Loading)
+                        try {
+                            val verses = repository.getVersesForSurah(mode.surahName)
+                            val successState = SearchUiState.Success(
+                                results = verses,
+                                totalResults = verses.size,
+                                canLoadMore = false,
+                                isLoadingMore = false,
+                                query = "" // Empty query to avoid highlighting
+                            )
+                            emit(successState)
+                        } catch (e: Exception) {
+                            Log.e("SearchViewModel", "Failed to load surah ${mode.surahName}", e)
+                            emit(SearchUiState.Error("Failed to load surah: ${e.message}"))
                         }
-
-                        SearchUiState.Success(
-                            results = combinedResults,
-                            totalResults = result.results.totalCount,
-                            canLoadMore = result.results.hasNextPage,
-                            isLoadingMore = false,
-                            query = trigger.query
-                        )
                     }
                 }
             }
@@ -1036,44 +1253,34 @@ class SearchViewModel @Inject constructor(
             initialValue = SearchUiState.EmptyQuery
         )
 
-    // --- Helper data classes for the reactive stream ---
-
-    private data class SearchParams(
-        val filters: Set<String>,
-        val allWordsRequired: Boolean,
-        val loadHadiths: Boolean,
-        val loadVerses: Boolean
-    )
-
-    private data class SearchTrigger(val query: String, val params: SearchParams)
-
-    private sealed class PageFetchResult {
-        data object Loading : PageFetchResult()
-        data class Success(val results: VerseRepository.PagedResults, val page: Int) : PageFetchResult()
-        data class Error(val error: Throwable) : PageFetchResult()
-    }
-
-
     // --- UI Event Handlers ---
 
     fun onQueryChange(query: String) {
+        displayMode.value = DisplayMode.Search
         searchQuery.value = query
         page.value = 0 // Reset pagination on new query
     }
 
     fun onSurahFilterChange(updatedFilters: Set<String>) {
+        displayMode.value = DisplayMode.Search
         viewModelScope.launch { prefs.saveSelectedSurahs(updatedFilters) }
         page.value = 0
     }
 
     fun onAllWordsRequiredChange(isRequired: Boolean) {
+        displayMode.value = DisplayMode.Search
         viewModelScope.launch { prefs.saveAllWordsRequired(isRequired) }
         page.value = 0
     }
 
     fun onFileSelectionChange(loadHadiths: Boolean, loadVerses: Boolean) {
+        displayMode.value = DisplayMode.Search
         viewModelScope.launch { prefs.saveFileSelection(loadHadiths, loadVerses) }
         page.value = 0
+    }
+
+    fun onDisplaySurah(surahName: String) {
+        displayMode.value = DisplayMode.Surah(surahName)
     }
 
     fun onLoadMore() {
@@ -1103,7 +1310,7 @@ class SearchViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
 }
 
-// --- file: UserPreferences.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\data\local\datastore\UserPreferences.kt ---
 package com.ahm.mydalil.data.local.datastore
 
 import android.content.Context
@@ -1161,7 +1368,7 @@ class UserPreferences(private val context: Context) {
 }
 
 
-// --- file: AppDatabase.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\data\local\room\AppDatabase.kt ---
 package com.ahm.mydalil.data.local.room
 
 import android.content.Context
@@ -1279,7 +1486,7 @@ abstract class AppDatabase : RoomDatabase() {
     }
 }
 
-// --- file: Bookmark.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\data\local\room\Bookmark.kt ---
 package com.ahm.mydalil.data.local.room
 
 import androidx.room.Entity
@@ -1315,7 +1522,7 @@ fun VerseRepository.VerseSearchResult.toBookmark(query: String): Bookmark {
     )
 }
 
-// --- file: BookmarkDao.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\data\local\room\BookmarkDao.kt ---
 package com.ahm.mydalil.data.local.room
 
 import androidx.room.Dao
@@ -1344,7 +1551,7 @@ interface BookmarkDao {
 }
 
 
-// --- file: Entities.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\data\local\room\Entities.kt ---
 package com.ahm.mydalil.data.local.room
 
 import androidx.room.ColumnInfo
@@ -1380,7 +1587,7 @@ data class VerseFtsEntity(
     val verseText: String
 )
 
-// --- file: VerseDao.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\data\local\room\VerseDao.kt ---
 package com.ahm.mydalil.data.local.room
 
 import androidx.room.Dao
@@ -1447,7 +1654,7 @@ interface VerseDao {
     suspend fun getVersesForSurah(surahName: String): List<VerseEntity>
 }
 
-// --- file: BookmarkScreen.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\ui\screens\bookmarks\BookmarkScreen.kt ---
 package com.ahm.mydalil.ui.screens.bookmarks
 
 import androidx.compose.animation.AnimatedVisibility
@@ -1617,7 +1824,7 @@ private fun BookmarkItem(
     }
 }
 
-// --- file: VerseDetailScreen.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\ui\screens\detail\VerseDetailScreen.kt ---
 package com.ahm.mydalil.ui.screens.detail
 
 import android.widget.Toast
@@ -1824,7 +2031,7 @@ private fun VersePageContent(verseContent: VerseContent) {
     }
 }
 
-// --- file: SearchScreen.kt ---
+// --- file: app\src\main\java\com\ahm\mydalil\ui\screens\search\SearchScreen.kt ---
 package com.ahm.mydalil.ui.screens.search
 
 import android.annotation.SuppressLint
@@ -1857,7 +2064,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -1880,7 +2086,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
 
 @SuppressLint("DiscouragedApi", "InternalInsetResource")
 fun getStatusBarHeight(context: Context): Float {
@@ -1911,7 +2116,6 @@ fun SearchScreen(
     val hadithSurahNames by viewModel.hadithSurahNames.collectAsStateWithLifecycle()
     val verseSurahNames by viewModel.verseSurahNames.collectAsStateWithLifecycle()
 
-    val coroutineScope = rememberCoroutineScope()
     var showFilters by remember { mutableStateOf(false) }
 
     // This is the list of verses that the detail screen will navigate through.
@@ -1920,7 +2124,7 @@ fun SearchScreen(
     // This is the specific verse from the list that is currently being displayed.
     var selectedVerse by remember { mutableStateOf<VerseRepository.VerseSearchResult?>(null) }
 
-    // This is the data from the main search query
+    // This is the data from the main search query OR the surah display.
     val searchResults = (uiState as? SearchUiState.Success)?.results ?: emptyList()
 
     BackHandler(enabled = showFilters, onBack = { showFilters = false } )
@@ -1958,15 +2162,9 @@ fun SearchScreen(
                         selectedSurahs = surahFilters,
                         onFilterChanged = viewModel::onSurahFilterChange,
                         onSurahLongPress = { surahName ->
-                            coroutineScope.launch {
-                                val verses = viewModel.getVersesForSurah(surahName)
-                                if (verses.isNotEmpty()) {
-                                    keyboardController?.hide()
-                                    detailViewVerseList = verses
-                                    selectedVerse = verses.first()
-                                    showFilters = false // Close filter panel after selection
-                                }
-                            }
+                            viewModel.onDisplaySurah(surahName)
+                            keyboardController?.hide()
+                            showFilters = false // Close filter panel after selection
                         },
                         loadHadiths = loadHadiths,
                         loadVerses = loadVerses
@@ -2030,7 +2228,9 @@ private fun ResultContent(
             val listState = rememberLazyListState()
 
             // Pagination trigger
-            LaunchedEffect(listState) {
+            LaunchedEffect(listState, uiState.canLoadMore) {
+                if (!uiState.canLoadMore) return@LaunchedEffect
+
                 snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
                     .filterNotNull()
                     .map { lastIndex -> lastIndex >= uiState.results.size - Constants.PAGINATION_PREFETCH_DISTANCE }
@@ -2052,8 +2252,14 @@ private fun ResultContent(
                 ) {
                     if (uiState.results.isNotEmpty()) {
                         item {
+                            val resultsText = if (uiState.query.isBlank() && uiState.results.isNotEmpty() && !uiState.canLoadMore) {
+                                // This is likely a surah display (no query, not paginated)
+                                "${uiState.totalResults} verses"
+                            } else {
+                                "${uiState.totalResults} results found"
+                            }
                             Text(
-                                "${uiState.totalResults} results found",
+                                text = resultsText,
                                 style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )

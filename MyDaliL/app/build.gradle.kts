@@ -1,5 +1,4 @@
-import org.gradle.kotlin.dsl.implementation
-
+// --- file: app\build.gradle.kts ---
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.jetbrains.kotlin.android)
@@ -79,9 +78,10 @@ dependencies {
     ksp(libs.hilt.compiler)
 
     // Room for Local Database
-    implementation(libs.androidx.room.runtime)
-    implementation(libs.androidx.room.ktx) // For Coroutines support
-    ksp(libs.androidx.room.compiler)
+    val roomVersion = "2.6.1"
+    implementation("androidx.room:room-runtime:$roomVersion")
+    implementation("androidx.room:room-ktx:$roomVersion")
+    ksp("androidx.room:room-compiler:$roomVersion")
 
     // DataStore for Preferences
     implementation(libs.androidx.datastore.preferences)
@@ -100,24 +100,9 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 
-    // Swipe
-    //implementation("androidx.compose.foundation:foundation:1.7.0-beta02")
-    implementation(libs.androidx.compose.foundation)
-
     // Windows size
     implementation("androidx.compose.material3:material3-window-size-class")
 
-    implementation("androidx.room:room-runtime:2.6.1")
-    ksp("androidx.room:room-compiler:2.6.1")
-
-    val room_version = "2.6.1"
-
-    implementation("androidx.room:room-runtime:$room_version")
-    annotationProcessor("androidx.room:room-compiler:$room_version")
-    // To use Kotlin Symbol Processing (KSP)
-    ksp("androidx.room:room-compiler:$room_version")
-    // optional - Kotlin Extensions and Coroutines support for Room
-    implementation("androidx.room:room-ktx:$room_version")
-    // optional - FTS support
+    // optional - FTS support for Room
     implementation("androidx.sqlite:sqlite-ktx:2.4.0")
 }

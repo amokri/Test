@@ -64,10 +64,14 @@ class VerseRepository @Inject constructor(
                 return@withContext PagedResults(emptyList(), 0, false)
             }
 
-            // Use "AND" for "match all words", "OR" for "match any".
-            // Add a wildcard (*) to the last term for prefix matching (e.g., "prop" matches "prophet").
-            val separator = if (allWordsRequired) " AND " else " OR "
-            terms.joinToString(separator) { "$it*" }
+            // For "all words required", FTS uses a space as an implicit AND operator.
+            // For "any word", the OR operator must be explicit.
+            // A wildcard (*) is added to each term for prefix matching.
+            if (allWordsRequired) {
+                terms.joinToString(" ") { "$it*" }
+            } else {
+                terms.joinToString(" OR ") { "$it*" }
+            }
         }
 
         val offset = page * pageSize
